@@ -1,0 +1,19 @@
+# Generated build/runtime files
+.build/
+.runtime/
+dist/
+.swiftpm/
+__pycache__/
+*.pyc
+.DS_Store
+# Local manuscripts, credentials and per-project state
+.kimi-code/
+.kimi-paper.json
+.tex-mcp-web.yaml
+.env
+.env.*
+auth.json
+credentials/
+oauth/
+*.log
+*.pdf

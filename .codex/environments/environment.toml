@@ -1,0 +1,8 @@
+version = 1
+name = "Kimi Paper"
+[setup]
+script = ""
+[[actions]]
+name = "Run"
+icon = "run"
+command = "./scripts/build.sh --run"
