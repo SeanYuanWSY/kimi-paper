@@ -1,25 +1,44 @@
 import SwiftUI
 import WebKit
 
+// Starting navigation before SwiftUI attaches a replacement pane can leave WebKit blank.
+final class AttachedWebView: WKWebView {
+    private var pendingRequest: URLRequest?
+
+    func navigate(_ request: URLRequest) {
+        guard window != nil else { pendingRequest = request; return }
+        pendingRequest = nil
+        load(request)
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil, let request = pendingRequest { navigate(request) }
+    }
+}
+
 struct WebPane: NSViewRepresentable {
     let url: URL
     let revision: UUID
     let onFailure: (String) -> Void
+    var translation: TranslationService? = nil
+    var prepareAgents: (() async throws -> Void)? = nil
 
-    func makeCoordinator() -> Coordinator { Coordinator(url: url, onFailure: onFailure) }
+    func makeCoordinator() -> Coordinator { Coordinator(url: url, onFailure: onFailure, translation: translation, prepareAgents: prepareAgents) }
 
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()
         config.preferences.javaScriptCanOpenWindowsAutomatically = false
         installScripts(in: config)
-        let view = WKWebView(frame: .zero, configuration: config)
+        if translation != nil { config.userContentController.addScriptMessageHandler(context.coordinator, contentWorld: .page, name: "paper") }
+        let view = AttachedWebView(frame: .zero, configuration: config)
         view.navigationDelegate = context.coordinator
         view.uiDelegate = context.coordinator
         view.allowsBackForwardNavigationGestures = false
         context.coordinator.lastURL = url
         context.coordinator.revision = revision
-        view.load(URLRequest(url: navigationURL))
+        view.navigate(URLRequest(url: navigationURL))
         return view
     }
 
@@ -57,6 +76,19 @@ struct WebPane: NSViewRepresentable {
               const [origin, credential] = \(encoded);
               if (location.origin === origin) {
                 localStorage.setItem('kimi-web.server-credential', JSON.stringify({version: 1, credential, expiresAt: Date.now() + 604800000}));
+                \(translation != nil ? """
+                sessionStorage.setItem('kimi-paper.token', credential);
+                const originalFetch = window.fetch.bind(window);
+                window.fetch = (input, options = {}) => {
+                  const target = new URL(typeof input === 'string' ? input : input.url, location.href);
+                  if (target.origin === origin) {
+                    const headers = new Headers(options.headers || (input instanceof Request ? input.headers : undefined));
+                    headers.set('Authorization', 'Bearer ' + credential);
+                    options = {...options, headers};
+                  }
+                  return originalFetch(input, options);
+                };
+                """ : "")
               }
             })();
             """
@@ -70,22 +102,42 @@ struct WebPane: NSViewRepresentable {
         context.coordinator.lastURL = url
         context.coordinator.revision = revision
         installScripts(in: view.configuration)
-        view.load(URLRequest(url: navigationURL))
+        (view as? AttachedWebView)?.navigate(URLRequest(url: navigationURL))
     }
 
     static func dismantleNSView(_ view: WKWebView, coordinator: Coordinator) {
         view.stopLoading(); view.navigationDelegate = nil; view.uiDelegate = nil
         view.configuration.userContentController.removeAllUserScripts()
+        view.configuration.userContentController.removeScriptMessageHandler(forName: "paper", contentWorld: .page)
         view.configuration.websiteDataStore.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast, completionHandler: {})
     }
 
-    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
+    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandlerWithReply {
         var allowedPort: Int?
         var lastURL: URL?
         var revision: UUID?
         let onFailure: (String) -> Void
-        init(url: URL, onFailure: @escaping (String) -> Void) {
+        let translation: TranslationService?
+        let prepareAgents: (() async throws -> Void)?
+        init(url: URL, onFailure: @escaping (String) -> Void, translation: TranslationService?, prepareAgents: (() async throws -> Void)?) {
             allowedPort = url.port; self.onFailure = onFailure
+            self.translation = translation; self.prepareAgents = prepareAgents
+        }
+
+        func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage,
+                                   replyHandler: @escaping (Any?, String?) -> Void) {
+            guard message.frameInfo.isMainFrame, let source = message.frameInfo.request.url, permitted(source),
+                  let body = message.body as? [String: Any], let translation else {
+                replyHandler(nil, "不允许的页面请求。"); return
+            }
+            Task { @MainActor in
+                do {
+                    if body["operation"] as? String == "prepareAgents" {
+                        try await prepareAgents?()
+                        replyHandler(["ready": true], nil)
+                    } else { replyHandler(try await translation.handle(body), nil) }
+                } catch { replyHandler(nil, (error as? AppFailure)?.errorDescription ?? "请求未完成，请检查连接或设置。") }
+            }
         }
 
         func permitted(_ url: URL) -> Bool {

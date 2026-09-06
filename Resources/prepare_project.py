@@ -54,7 +54,7 @@ def main():
                "compiler": "pdflatex", "auto_compile": False, "port": port}
     env_args = [key + "=" for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy", "PYTHONHOME", "PYTHONPATH")]
     env_args += ["NO_PROXY=localhost,127.0.0.1", "no_proxy=localhost,127.0.0.1"]
-    servers[name] = {"command": "/usr/bin/env", "args": env_args + [str(python), "-c", "from tex_mcp_web.cli import main_mcp; raise SystemExit(main_mcp())"],
+    servers[name] = {"command": "/usr/bin/env", "args": env_args + [str(python), str(Path(__file__).with_name("paper_mcp.py"))],
                      "cwd": str(root), "toolTimeoutMs": 300000}
     kimi_dir.mkdir(exist_ok=True)
     if mcp.exists():

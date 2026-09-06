@@ -12,7 +12,7 @@ struct KimiPaperApp: App {
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("打开论文…") { delegate.workspace.choosePaper() }
-                    .keyboardShortcut("o").disabled(delegate.workspace.busy || delegate.workspace.connecting || delegate.workspace.sending)
+                    .keyboardShortcut("o").disabled(delegate.workspace.busy || delegate.workspace.connecting || delegate.workspace.sending || delegate.workspace.activeCandidates > 0)
             }
         }
     }
@@ -27,9 +27,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        if workspace.busy || workspace.sending {
+        if workspace.busy || workspace.sending || workspace.activeCandidates > 0 {
             let alert = NSAlert()
-            alert.messageText = "Kimi 仍在处理论文"
+            alert.messageText = "仍有论文任务在处理"
             alert.informativeText = "退出会停止本应用启动的服务。已保存的论文和对话会保留。"
             alert.addButton(withTitle: "继续等待"); alert.addButton(withTitle: "停止并退出")
             if alert.runModal() == .alertFirstButtonReturn { return .terminateCancel }

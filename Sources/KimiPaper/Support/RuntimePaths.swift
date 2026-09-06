@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import CFNetwork
 
 enum AppFailure: LocalizedError {
     case message(String)
@@ -11,13 +12,35 @@ struct RuntimePaths {
     var python: URL { resources.appendingPathComponent("python/bin/python3.12") }
     var helper: URL { resources.appendingPathComponent("prepare_project.py") }
     var supervisor: URL { resources.appendingPathComponent("supervise.py") }
+    var paperService: URL { resources.appendingPathComponent("paper_service.py") }
     var kimi: URL { FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".kimi-code/bin/kimi") }
     var support: URL { FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Kimi Paper") }
+
+    // Keep local app requests direct; only the trusted Codex gateway receives this route.
+    var agentProxyEnvironment: [String: String] {
+        let inherited = ProcessInfo.processInfo.environment
+        for name in ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"] {
+            if let value = inherited[name], !value.isEmpty {
+                return ["KIMI_PAPER_UPSTREAM_PROXY": value]
+            }
+        }
+        guard let settings = CFNetworkCopySystemProxySettings()?.takeRetainedValue() as? [String: Any] else { return [:] }
+        for prefix in ["HTTPS", "HTTP"] {
+            if (settings[prefix + "Enable"] as? NSNumber)?.boolValue == true,
+               let host = settings[prefix + "Proxy"] as? String,
+               let port = settings[prefix + "Port"] as? Int, (1...65535).contains(port) {
+                var address = URLComponents()
+                address.scheme = "http"; address.host = host; address.port = port
+                if let value = address.string { return ["KIMI_PAPER_UPSTREAM_PROXY": value] }
+            }
+        }
+        return [:]
+    }
 
     func environment(localOnly: Bool = false) -> [String: String] {
         var env = ProcessInfo.processInfo.environment
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        env["PATH"] = "/Library/TeX/texbin:/opt/homebrew/bin:/usr/local/bin:\(home)/.local/bin:\(home)/.kimi-code/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        env["PATH"] = "/Library/TeX/texbin:/opt/homebrew/bin:/usr/local/bin:\(home)/.local/bin:\(home)/.npm-global/bin:\(home)/.kimi-code/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         env["PYTHONUNBUFFERED"] = "1"
         // The bundled interpreter owns its imports; never inherit another Python environment.
         env.removeValue(forKey: "PYTHONHOME")

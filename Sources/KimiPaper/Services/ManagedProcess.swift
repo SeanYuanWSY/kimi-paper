@@ -12,13 +12,13 @@ final class ManagedProcess {
     var onExit: (() -> Void)?
     var running: Bool { process.isRunning }
 
-    init(paths: RuntimePaths, executable: URL, arguments: [String], cwd: URL, localOnly: Bool) throws {
+    init(paths: RuntimePaths, executable: URL, arguments: [String], cwd: URL, localOnly: Bool, extraEnvironment: [String: String] = [:]) throws {
         // Supervisor owns a separate child process group and kills it when our stdin closes.
         // This also handles a crashed app without touching unrelated Kimi processes.
         process.executableURL = paths.python
         process.arguments = [paths.supervisor.path, executable.path] + arguments
         process.currentDirectoryURL = cwd
-        process.environment = paths.environment(localOnly: localOnly)
+        process.environment = paths.environment(localOnly: localOnly).merging(extraEnvironment) { _, new in new }
         process.standardInput = control
         process.standardOutput = output
         process.standardError = output

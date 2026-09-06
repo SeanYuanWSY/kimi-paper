@@ -23,6 +23,7 @@ cp "$BINARY_DIR/KimiPaper" "$STAGED_APP/Contents/MacOS/KimiPaper"
 ditto "$PYTHON_BASE" "$RESOURCES/python"
 ditto "$ENV_DIR/lib/python3.12/site-packages" "$RESOURCES/python/lib/python3.12/site-packages"
 cp "$ROOT_DIR/Resources/prepare_project.py" "$ROOT_DIR/Resources/supervise.py" "$ROOT_DIR/Resources/example.tex" "$ROOT_DIR/Resources/AppIcon.icns" "$RESOURCES/"
+cp "$ROOT_DIR/Resources/"paper_*.py "$ROOT_DIR/Resources/paper_viewer.js" "$ROOT_DIR/Resources/workbench.html" "$RESOURCES/"
 cp "$ROOT_DIR/licenses/tex-mcp-web-MIT.txt" "$RESOURCES/tex-mcp-web-LICENSE"
 cp "$ROOT_DIR/Resources/Info.plist" "$STAGED_APP/Contents/Info.plist"
 codesign --force --sign - "$STAGED_APP" >/dev/null

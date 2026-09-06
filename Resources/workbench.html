@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>修改任务 · Kimi Paper</title>
+<style>
+:root{font:14px -apple-system,BlinkMacSystemFont,sans-serif;color:#232637;background:#f5f6fa;color-scheme:light}*{box-sizing:border-box}body{margin:0;padding:18px}button,input,select,textarea{font:inherit}button{border:1px solid #d0d3df;border-radius:8px;background:white;padding:7px 11px;cursor:pointer;color:#292c44}button:hover{background:#eceefa}button:disabled{opacity:.45;cursor:default}button:focus-visible,summary:focus-visible,input:focus-visible,textarea:focus-visible{outline:3px solid #5353ca;outline-offset:2px}.primary{background:#5151bd;color:white}header{display:flex;align-items:center;justify-content:space-between;gap:8px}h1{font-size:21px;margin:0}p{line-height:1.65}.muted{color:#606579;font-size:12px}.notice{background:#fff4d8;border-radius:8px;padding:9px;white-space:pre-wrap}.group{margin:16px 0;border:1px solid #dddfea;background:white;border-radius:13px;padding:12px}.group>summary{font-weight:600;cursor:pointer;line-height:1.6}.candidates{display:flex;overflow-x:auto;gap:12px;padding-top:12px;scroll-snap-type:x proximity}.candidate{border:1px solid #e1e3eb;border-radius:10px;padding:12px;min-width:310px;flex:1;scroll-snap-align:start}.candidate h3{font-size:14px;overflow-wrap:anywhere;margin:0 0 9px}.status{font-size:12px;color:#5353ae}.output{white-space:pre-wrap;overflow-wrap:anywhere;max-height:240px;overflow:auto;font-size:13px;line-height:1.7}.actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:12px}.diff{white-space:pre-wrap;overflow-wrap:anywhere;font:12px ui-monospace,monospace;max-height:380px;overflow:auto;background:#f7f8fb;padding:10px;border-radius:7px}textarea,input[type=text],input[type=password]{width:100%;padding:8px;border:1px solid #cbd0df;border-radius:7px}textarea{margin-top:12px;resize:vertical}label{display:block;margin:10px 0}dialog{max-width:560px;width:90%;border:1px solid #ddd;border-radius:15px;padding:22px}dialog::backdrop{background:#18203d66}#empty{padding:25px 0}.busy{color:#8a5b11}details>summary{cursor:pointer}#connection{min-height:20px}
+</style></head><body>
+<header><h1>修改任务</h1><button id="settings">翻译设置</button></header>
+<p class="muted">边读边批注，候选在后台生成。只有你点击采纳，正文才会更新。</p>
+<button id="batch" hidden>统一处理已保存的批注</button>
+<details id="local-history"><summary>本地版本记录</summary><p class="muted">每次采纳和撤销自动留版本，不改变论文仓库的分支和暂存区。</p><button id="refresh-history">刷新版本</button><div id="history-list"></div></details>
+<details id="github-panel"><summary>GitHub 协作</summary>
+<p class="muted">本地自动版本与 GitHub 分开。下方操作均先预览再确认；合作时建议使用自己的分支，在 GitHub 发起合并请求。</p>
+<button id="git-refresh">刷新仓库状态</button> <a id="git-open" hidden rel="noreferrer">打开 GitHub 仓库</a>
+<p id="git-status" role="status">展开后查看仓库。</p>
+<button id="git-init" hidden>为这篇论文建立独立仓库</button>
+<div id="git-controls" hidden>
+<div id="git-files"></div>
+<div class="actions"><button id="git-stage">将勾选文件加入暂存</button><button id="git-ignore">忽略应用临时文件</button></div>
+<label>版本说明<input id="git-message" type="text" placeholder="例如：完善引言与相关工作"></label><button id="git-commit">预览提交暂存内容</button>
+<label>协作分支<input id="git-branch" type="text" list="git-branches" placeholder="例如：paper/introduction-wsy"></label><datalist id="git-branches"></datalist>
+<div class="actions"><button id="git-new-branch">新建并切换</button><button id="git-switch">切换已有分支</button></div>
+<label>GitHub 仓库地址<input id="git-url" type="text" placeholder="https://github.com/用户名/论文仓库"></label>
+<div class="actions"><button id="git-connect">连接仓库</button><a href="https://github.com/new" rel="noreferrer">新建 GitHub 仓库（建议私有）</a></div>
+<div class="actions"><button id="git-fetch">检查远端更新</button><button id="git-pull">拉取当前分支</button><button id="git-push">推送当前分支</button></div>
+</div></details>
+<dialog id="git-confirm"><h2>确认 Git 操作</h2><p id="git-confirm-summary"></p><pre id="git-confirm-files" class="diff"></pre><div class="actions"><button id="git-confirm-run" class="primary">确认执行</button><button id="git-confirm-cancel">取消</button></div></dialog>
+<div id="connection" role="status" class="muted">正在连接…</div><div id="error" role="alert"></div>
+<div id="empty">在右侧论文添加批注，选择模型并开始。</div><main id="groups"></main>
+<dialog id="translation-settings"><form id="settings-form"><h2>阅读翻译</h2>
+<p class="muted">支持 OpenAI 兼容的 Chat Completions 接口。密钥仅存于本机系统钥匙串；更换接口地址时请重新填写密钥。</p>
+<label>完整接口地址<input id="endpoint" type="text" placeholder="https://服务地址/v1/chat/completions" required></label>
+<label>模型<input id="model" type="text" required></label>
+<label>API 密钥<input id="key" type="password" autocomplete="off" placeholder="留空保留已保存密钥"></label>
+<label><input id="remove-key" type="checkbox"> 移除已保存密钥</label>
+<label>目标语言<input id="language" type="text" value="简体中文" required></label>
+<label><input id="enabled" type="checkbox"> 默认开启滚动翻译</label>
+<div id="settings-status" role="status"></div>
+<div class="actions"><button class="primary" type="submit">保存设置</button><button id="test-translation" type="button">测试翻译</button><button id="close-settings" type="button">关闭</button></div>
+</form></dialog>
+<script>
+const $=s=>document.querySelector(s);
+const el=(tag,text,cls)=>{const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;};
+const statusNames={draft:'等待统一处理',queued:'排队中',running:'正在生成',waiting:'等待你的确认',ready:'建议就绪',needs_review:'需要检查',failed:'失败',cancelled:'已弃用',interrupted:'上次运行中断',applying:'正在采纳',applied:'已采纳',undone:'已撤销'};
+const taskNodes=new Map(), groupNodes=new Map(), pendingActions=new Set();
+async function api(path,body,method=body===undefined?'GET':'POST'){
+ const response=await fetch(path,{method,headers:{'Content-Type':'application/json','Authorization':'Bearer '+sessionStorage.getItem('kimi-paper.token')},body:body===undefined?undefined:JSON.stringify(body)});
+ const data=await response.json();if(!response.ok)throw new Error(data.error||'连接未完成');return data;
+}
+async function action(id,verb,body={}){
+ if(pendingActions.has(id))return;pendingActions.add(id);
+ $('#error').textContent='';
+ const v=taskNodes.get(id);if(v)for(const key of ['apply','undo','retry','cancel'])v[key].disabled=true;
+ try{if(verb==='retry'&&taskNodes.get(id)?.tool==='kimi')await native({operation:'prepareAgents'});await api('/kp/tasks/'+id+'/'+verb,body);}catch(e){$('#error').className='notice';$('#error').textContent=e.message;}finally{pendingActions.delete(id);await refresh();}
+}
+function button(text,fn,primary=false){const b=el('button',text,primary?'primary':'');b.type='button';b.addEventListener('click',fn);return b;}
+function taskNode(task){
+ let view=taskNodes.get(task.id);if(view)return view;
+ let group=groupNodes.get(task.group);
+ if(!group){group=el('details',undefined,'group');group.open=true;group.append(el('summary',task.comment.text||'论文修改'));const list=el('div',undefined,'candidates');group.append(list);groupNodes.set(task.group,group);$('#groups').prepend(group);}
+ const root=el('article',undefined,'candidate'),title=el('h3',task.tool+' · '+task.model),status=el('div',undefined,'status'),message=el('p',undefined,'muted'),stale=el('p',undefined,'notice');
+ const progress=el('details');progress.append(el('summary','修改说明与实时输出'));const output=el('div',undefined,'output');progress.append(output);
+ const differences=el('div'),compile=el('p',undefined,'muted'),permission=el('div'),instruction=el('textarea');instruction.placeholder='继续修改的要求（可选）';instruction.setAttribute('aria-label','追加修改要求');instruction.rows=2;
+ const actions=el('div',undefined,'actions');
+ const apply=button('采纳此候选',()=>action(task.id,'apply'),true),undo=button('撤销采纳',()=>action(task.id,'undo')),retry=button('继续生成',()=>action(task.id,'retry',{instruction:instruction.value})),cancel=button('取消 / 弃用',()=>action(task.id,'cancel'));
+ actions.append(apply,undo,retry,cancel);root.append(title,status,message,stale,progress,differences,compile,permission,instruction,actions);group.querySelector('.candidates').append(root);
+ view={tool:task.tool,root,status,message,stale,output,differences,compile,permission,apply,undo,retry,cancel,instruction,diffKey:'',permissionKey:''};taskNodes.set(task.id,view);return view;
+}
+function update(task){
+ const v=taskNode(task);v.status.textContent=statusNames[task.status]||task.status;v.message.textContent=task.message;v.output.textContent=task.explanation||task.output||'等待 Kimi 输出…';
+ if(task.readyAt&&task.started)v.message.textContent+=' · 生成 '+Math.max(0,task.readyAt-task.started).toFixed(1)+' 秒';
+ v.stale.hidden=!task.baselineChanged||['applied','undone','cancelled'].includes(task.status);v.stale.textContent='正文已有更新；采纳前会重新合并检查，重叠修改不会覆盖。';
+ v.apply.disabled=task.status!=='ready'||task.commentChanged;v.undo.hidden=task.status!=='applied';v.retry.disabled=['running','queued','waiting','applying'].includes(task.status);v.cancel.disabled=['applied','undone','cancelled','applying'].includes(task.status);if(pendingActions.has(task.id))for(const key of ['apply','undo','retry','cancel'])v[key].disabled=true;
+ const ck=JSON.stringify(task.changes);if(ck!==v.diffKey){v.diffKey=ck;v.differences.replaceChildren();for(const change of task.changes){const detail=el('details');detail.open=true;detail.append(el('summary',change.file),el('pre',change.diff||change.after,'diff'));const original=el('details');original.append(el('summary','查看完整原文'),el('pre',change.before,'diff'));const revised=el('details');revised.append(el('summary','查看完整候选'),el('pre',change.after,'diff'));detail.append(original,revised);v.differences.append(detail);}}
+ v.compile.textContent=task.compilation?(task.compilation.success?'编译通过':'编译失败')+' · '+task.compilation.errors.length+' 个错误 · '+task.compilation.warnings.length+' 个警告':(task.status==='ready'?'尚未编译；采纳时检查，通过后才写入。':'');
+ if(task.compilation&&!task.compilation.success)v.compile.textContent+='\n'+task.compilation.errors.map(e=>e.message).join('\n');
+ const pk=JSON.stringify(task.permission||null);if(pk!==v.permissionKey){v.permissionKey=pk;v.permission.replaceChildren();if(task.permission){v.permission.append(el('p',task.permission.title,'notice'));for(const option of task.permission.options){v.permission.append(button(option.label,async()=>{try{await api('/kp/permission/'+task.permission.id,{option:option.id});await refresh();}catch(e){$('#error').textContent=e.message;}}));}}}
+}
+let refreshing=false,lastFocus=null;
+async function refresh(){if(refreshing)return;refreshing=true;try{const data=await api('/kp/tasks');$('#connection').textContent=data.gitBusy?'Git 操作进行中':data.running?data.running+' 个建议排队或运行中 · 即时任务最多并行 3 个':'所有任务状态已更新';$('#batch').hidden=!data.tasks.some(t=>t.status==='draft'&&!t.commentChanged);$('#empty').hidden=data.tasks.length>0;for(const task of data.tasks.slice().reverse())update(task);if(data.focus&&data.focus.revision!==lastFocus){const view=taskNodes.get(data.focus.id);if(view){view.root.closest('.group').open=true;view.root.scrollIntoView({behavior:'smooth',block:'start'});lastFocus=data.focus.revision;}}}catch(e){$('#connection').textContent='连接暂时中断，正在重试…';}finally{refreshing=false;}}
+$('#batch').onclick=async()=>{try{$('#batch').disabled=true;await native({operation:'prepareAgents'});await api('/kp/batch',{});await refresh();}catch(e){$('#error').textContent=e.message;}finally{$('#batch').disabled=false;}};
+$('#refresh-history').onclick=async()=>{try{const data=await api('/kp/versions');const list=$('#history-list');list.replaceChildren();if(!data.versions.length)list.append(el('p','尚无本地版本；下次采纳后自动保存。','muted'));for(const v of data.versions){const row=el('div');row.append(el('p',new Date(v.created*1000).toLocaleString()+' · '+(v.operation==='undo'?'撤销':'采纳')+' · '+v.files.join('、')),button('查看此版本的差异',async()=>{try{const detail=await api('/kp/versions/'+v.id);const block=el('pre',detail.changes.map(c=>c.diff).join('\n'),'diff');row.append(block);}catch(e){$('#error').textContent=e.message;}}));list.append(row);}}catch(e){$('#error').textContent=e.message;}};
+let gitToken=null,gitBusy=false;
+async function refreshGit(){try{const s=await api('/kp/git');$('#git-controls').hidden=!s.available;$('#git-init').hidden=!s.canInit;$('#git-open').hidden=!s.githubURL;if(s.githubURL)$('#git-open').href=s.githubURL;
+ $('#git-status').textContent=s.available?`当前分支：${s.branch||'未选择'} · 本地领先 ${s.ahead} / 落后 ${s.behind} 个提交`+(s.operations.length?' · 进行中的操作：'+s.operations.join('、'):'')+'\n远端状态以最近一次检查为准。':s.reason;
+ if(!s.available)return;const list=$('#git-files');list.replaceChildren();for(const f of s.files){const label=el('label'),input=el('input');input.type='checkbox';input.value=f.path;input.setAttribute('aria-label','选择 '+f.path);label.append(input,document.createTextNode(' '+f.path+' · 暂存 '+f.index+' / 工作区 '+f.worktree));list.append(label);}if(!s.files.length)list.append(el('p','工作区干净。','muted'));
+ $('#git-branches').replaceChildren(...s.branches.map(name=>{const o=el('option');o.value=name;return o;}));
+ for(const id of ['git-fetch','git-pull','git-push'])$('#'+id).disabled=!s.remoteOK;
+ }catch(e){$('#git-status').textContent=e.message;}}
+async function previewGit(action){if(gitBusy)return;gitBusy=true;$('#git-status').textContent='正在检查操作范围…';try{const files=Array.from(document.querySelectorAll('#git-files input:checked')).map(n=>n.value);const p=await api('/kp/git/preview',{action,files,message:$('#git-message').value,branch:$('#git-branch').value,url:$('#git-url').value});gitToken=p.token;$('#git-confirm-summary').textContent=p.summary;$('#git-confirm-files').textContent=p.files.join('\n');$('#git-confirm').showModal();}catch(e){$('#git-status').textContent=e.message;}finally{gitBusy=false;}}
+$('#github-panel').addEventListener('toggle',()=>{if($('#github-panel').open)refreshGit();});$('#git-refresh').onclick=refreshGit;
+for(const [id,action] of Object.entries({'git-init':'init','git-ignore':'ignore','git-stage':'stage','git-commit':'commit','git-new-branch':'branch','git-switch':'switch','git-connect':'connect','git-fetch':'fetch','git-pull':'pull','git-push':'push'}))$('#'+id).onclick=()=>previewGit(action);
+$('#git-confirm').addEventListener('cancel',e=>{if(gitBusy)e.preventDefault();});
+$('#git-confirm-cancel').onclick=()=>{gitToken=null;$('#git-confirm').close();};
+$('#git-confirm-run').onclick=async()=>{if(!gitToken||gitBusy)return;gitBusy=true;$('#git-confirm-run').disabled=true;$('#git-confirm-cancel').disabled=true;try{const result=await api('/kp/git/execute',{token:gitToken});gitToken=null;$('#git-confirm').close();await refreshGit();$('#git-status').textContent+='\n'+result.message;}catch(e){$('#git-confirm').close();$('#git-status').textContent=e.message;}finally{gitBusy=false;$('#git-confirm-run').disabled=false;$('#git-confirm-cancel').disabled=false;}};
+const native=body=>window.webkit?.messageHandlers?.paper?window.webkit.messageHandlers.paper.postMessage(body):Promise.reject(new Error('请在 Mac 应用中使用翻译。'));
+$('#settings').onclick=async()=>{try{const s=await native({operation:'settings'});for(const k of ['endpoint','model','language'])$('#'+k).value=s[k];$('#enabled').checked=s.enabled;$('#key').value='';$('#remove-key').checked=false;$('#settings-status').textContent=s.hasKey?'已保存密钥':'尚未保存密钥';$('#translation-settings').showModal();}catch(e){$('#error').textContent=e.message;}};
+$('#close-settings').onclick=()=>{$('#key').value='';$('#translation-settings').close();};
+$('#settings-form').onsubmit=async e=>{e.preventDefault();try{const body={operation:'saveSettings',enabled:$('#enabled').checked,removeKey:$('#remove-key').checked};for(const k of ['endpoint','model','language','key'])body[k]=$('#'+k).value;await native(body);$('#key').value='';$('#settings-status').textContent='已保存。可点击测试翻译；右侧可单独开启阅读翻译。';}catch(e){$('#settings-status').textContent=e.message;}};
+$('#test-translation').onclick=async()=>{try{$('#settings-status').textContent='正在测试已保存的设置…';const r=await native({operation:'translate',text:'The proposed method improves accuracy while preserving Eq. (1) and reference [2].'});$('#settings-status').textContent=r.text;}catch(e){$('#settings-status').textContent=e.message;}};
+refresh();setInterval(refresh,1500);
+</script></body></html>
