@@ -6,7 +6,6 @@ import os
 from pathlib import Path
 import re
 import secrets
-import socket
 import sys
 import time
 import uuid
@@ -14,9 +13,14 @@ import uuid
 import aiohttp
 from aiohttp import web
 from paper_tasks import (TaskError, atomic_json, source_files, materialize, fingerprint,
-                         sandbox_profile, agent_environment, stop_group, safe_path, candidate_diff,
-                         sensitive_project_paths, direct_project_write_denials)
+                         stop_group, safe_path, candidate_diff)
 from paper_engine import paper_files, compile_copy
+
+
+def kimi_web_command():
+    """Launch the official Kimi Web UI without changing its permission policy."""
+    return [str(Path.home()/'.kimi-code/bin/kimi'),
+            'web','--port','0','--host','127.0.0.1','--no-open']
 
 
 class Studio:
@@ -61,6 +65,9 @@ class Studio:
         self.error = None
         self.lock = asyncio.Lock()
         self.send_lock = asyncio.Lock()
+        self.session_locks = {}
+        self.routes = {}
+        self.route_epoch = 0
         self.last_busy = False
         if self.direct:
             self.reconcile_direct_checkpoint()
@@ -182,81 +189,78 @@ class Studio:
 
     async def start(self):
         self.token=None
-        env, protected = agent_environment(self.run, 'kimi')
-        with socket.socket() as s:
-            s.bind(('127.0.0.1',0)); self.port=s.getsockname()[1]
-        if self.direct:
-            excluded = []
-            self.project_files(excluded)
-            sensitive = sensitive_project_paths(self.work)
-            nonrecoverable = [self.work / item['path'] for item in excluded]
-            protected = [*protected, self.work / '.git', self.work / '.tex-mcp-web.yaml',
-                         *sensitive, *nonrecoverable]
-            boundary = sandbox_profile(self.work, self.engine.manuscript,
-                        [self.work, self.run/'home', self.run/'tmp'], protected,
-                        unreadable=sensitive,
-                        deny_manuscript_read=False)
-            boundary += '\n' + direct_project_write_denials(self.work)
-        else:
-            boundary = sandbox_profile(self.work, self.engine.manuscript,
-                        [self.work, self.run/'home', self.run/'tmp'], protected,
-                        read_scope=(self.engine.store.root, self.run))
-        # Server and descendants may listen only on this dedicated local Web port.
-        boundary += f'\n(allow network-bind (local tcp "localhost:{self.port}"))\n(allow network-inbound (local tcp "localhost:{self.port}"))'
-        profile = self.run/'web.sb'; profile.write_text(boundary)
+        # This is the user's normal Kimi Web runtime. Kimi's own visible permission
+        # mode governs tool access; the app never passes a bypass or auto-approval flag.
+        env = os.environ.copy()
+        env['PYTHONUNBUFFERED'] = '1'
+        self.port=0
         rd,self.control=os.pipe()
         try:
             self.proc=await asyncio.create_subprocess_exec(sys.executable,str(Path(__file__).with_name('paper_guard.py')),str(rd),
-                '/usr/bin/sandbox-exec','-f',str(profile),str(Path.home()/'.kimi-code/bin/kimi'),
-                'web','--port',str(self.port),'--host','127.0.0.1','--no-open',
+                *kimi_web_command(),
                 cwd=self.work,env=env,stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.DEVNULL,
                 start_new_session=True,pass_fds=(rd,))
         finally: os.close(rd)
         async with asyncio.timeout(90):
             while line:=await self.proc.stdout.readline():
                 # Credentials are consumed in memory, never logged or stored in the manifest.
-                match=re.search(rb'http://127\.0\.0\.1:\d+/[^\s]*#token=([^\s\x1b]+)',line)
+                match=re.search(rb'http://127\.0\.0\.1:(\d+)/[^\s]*#token=([^\s\x1b]+)',line)
                 if match:
-                    self.token=match.group(1).decode();break
+                    self.port=int(match.group(1));self.token=match.group(2).decode();break
             if not self.token: raise TaskError('原生 Kimi Web 未能启动，请检查当前 Kimi 版本。')
         self.drain=asyncio.create_task(self.discard_output())
         self.http=aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20),trust_env=False)
+        await self.restore_session()
+        self.monitor=asyncio.create_task(self.watch())
+
+    async def restore_session(self):
         sid=self.manifest.get('session')
         if sid:
-            await self.select(sid)
-        else:
-            data=await self.request('sessions',{'title':'论文起草与修改','metadata':{'cwd':str(self.work)},
-                                               'agent_config':{'model':'kimi-for-coding/k3-256k'}})
-            await self.select(data['id'])
-        selected=await self.request('sessions/'+self.manifest['session'])
-        if not selected.get('agent_config',{}).get('model'):
-            await self.request('sessions/'+self.manifest['session']+'/profile',{'agent_config':{'model':'kimi-for-coding/k3-256k','thinking':'high'}})
-        self.monitor=asyncio.create_task(self.watch())
+            try:
+                await self.select(sid)
+            except TaskError:
+                # 0.5 stored sessions from a paper-scoped Kimi runtime. Those IDs
+                # do not necessarily exist in the native global workspace service.
+                self.manifest['session']=None
+                self.route_epoch+=1;self.routes.clear();self.persist()
 
     async def discard_output(self):
         while await self.proc.stdout.read(65536): pass
-
-    async def new_session(self):
-        async with self.send_lock:
-            data=await self.request('sessions',{'title':'论文起草与修改','metadata':{'cwd':str(self.work)}})
-            await self.select(data['id'])
-            await self.request('sessions/'+data['id']+'/profile',{'agent_config':{'model':'kimi-for-coding/k3-256k','thinking':'high'}})
 
     async def select(self, sid):
         if not isinstance(sid,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,150}',sid):
             raise TaskError('会话标识无效。')
         data=await self.request('sessions/'+sid)
-        if Path(data.get('metadata',{}).get('cwd','')).resolve()!=self.work.resolve():
-            raise TaskError('请选择此项目草稿目录中的会话；切换项目请使用顶部项目按钮。')
+        cwd=data.get('metadata',{}).get('cwd')
+        if not isinstance(cwd,str) or not Path(cwd).is_absolute():
+            raise TaskError('Kimi 会话没有有效的工作目录。')
+        if self.manifest.get('session') != sid:
+            self.route_epoch += 1
+            self.routes.clear()
         self.manifest['session']=sid;self.persist()
         return data
 
     async def busy(self):
-        data=await self.request('sessions?include_archive=true&page_size=100')
-        rows=data.get('items',data.get('sessions'))
-        if not isinstance(rows,list) or len(rows)>=100: raise TaskError('无法确认全部会话状态，请减少会话或重试。')
-        if any(not isinstance(row,dict) or not any(k in row for k in ('busy','main_turn_active')) or any(k in row and not isinstance(row[k],bool) for k in ('busy','main_turn_active')) for row in rows): raise TaskError('Kimi 会话状态格式不兼容。')
-        return any(row.get('busy') or row.get('main_turn_active') for row in rows)
+        before = None
+        seen = set()
+        while True:
+            query='sessions?include_archive=true&page_size=100'
+            if before:query+='&before_id='+before
+            data=await self.request(query)
+            rows=data.get('items',data.get('sessions'))
+            more=data.get('has_more',False)
+            if not isinstance(rows,list) or not isinstance(more,bool):
+                raise TaskError('Kimi 会话状态格式不兼容。')
+            for row in rows:
+                if (not isinstance(row,dict) or not isinstance(row.get('id'),str)
+                        or not any(k in row for k in ('busy','main_turn_active'))
+                        or any(k in row and not isinstance(row[k],bool) for k in ('busy','main_turn_active'))):
+                    raise TaskError('Kimi 会话状态格式不兼容。')
+                if row.get('busy') or row.get('main_turn_active'):return True
+            if not more:return False
+            if not rows or rows[-1]['id'] in seen:
+                raise TaskError('无法完整确认 Kimi 会话状态。')
+            before=rows[-1]['id'];seen.add(before)
 
     async def watch(self):
         try:
@@ -365,13 +369,29 @@ class Studio:
             self.persist()
             await self.service.broadcast({'type':'studio_preview','id':ident})
 
-    async def send(self, text, notes):
+    async def create_route(self, sid):
+        selected=await self.select(sid)
+        if selected.get('id') not in (None,sid):
+            raise TaskError('Kimi 会话身份不匹配。')
+        route=secrets.token_urlsafe(24)
+        self.routes[route]={'session':sid,'epoch':self.route_epoch,'created':time.time()}
+        return {'route':route}
+
+    def resolve_route(self, route):
+        record=self.routes.get(route)
+        if (not record or record['epoch']!=self.route_epoch
+                or time.time()-record['created']>1800):
+            raise TaskError('Kimi 会话已经切换，批注已保留；请确认当前会话后重新发送。')
+        return record['session']
+
+    async def send(self, text, notes, sid=None):
         if self.direct and getattr(self.service, 'git_active', False):
             raise TaskError('Git 操作正在进行，请完成后再发送修改。')
-        sid=self.manifest['session'];selected=await self.select(sid)
+        sid=sid or self.manifest['session'];selected=await self.request('sessions/'+sid)
         body=text.strip()
         if notes:
-            instruction = ('论文批注。请直接在当前项目目录中定位原文、修改源文件并保存：\n'
+            instruction = (f'论文批注。绑定论文根目录：{self.engine.manuscript}\n主文件：{self.engine.main}\n'
+                           '请定位原文、修改这篇论文的源文件并保存：\n'
                            if self.direct else '论文批注，请延续当前会话讨论或修改：\n')
             body+=('\n\n' if body else '')+instruction
             for number,note in enumerate(notes,1):
@@ -382,7 +402,9 @@ class Studio:
                  'model':config.get('model') or 'kimi-for-coding/k3-256k'}
         if config.get('thinking'):payload['thinking']=config['thinking']
         elif payload['model'].endswith('k3-256k'):payload['thinking']='high'
-        return await self.request('sessions/'+sid+'/prompts',payload)
+        lock=self.session_locks.setdefault(sid,asyncio.Lock())
+        async with lock:
+            return await self.request('sessions/'+sid+'/prompts',payload)
 
     def recover_swap(self):
         journal=self.run/'swap.json'
@@ -427,7 +449,7 @@ class Studio:
 
     async def sync(self):
         if self.direct:
-            raise TaskError('Kimi 已经在原项目目录中工作，无需同步草稿。')
+            raise TaskError('当前使用右侧论文的直接编辑模式，无需同步草稿。')
         async with self.lock:
             async with self.engine.apply_lock:
                 if await self.busy():raise TaskError('请先停止 Kimi，再更新草稿。')
@@ -470,11 +492,19 @@ class Studio:
 
     async def send_pending(self, text=''):
         async with self.send_lock:
-            notes=list(self.manifest.get('pending',[]))
-            await self.send(text,notes)
-            ids={n['id'] for n in notes}
-            self.manifest['pending']=[n for n in self.manifest.get('pending',[]) if n['id'] not in ids]
-            self.persist()
+            first=True
+            while self.manifest.get('pending'):
+                route=self.manifest['pending'][0].get('route')
+                sid=self.resolve_route(route)
+                notes=[]
+                for note in self.manifest['pending']:
+                    if note.get('route')!=route:break
+                    notes.append(note)
+                await self.send(text if first else '',notes,sid=sid)
+                first=False
+                ids={n['id'] for n in notes}
+                self.manifest['pending']=[n for n in self.manifest.get('pending',[]) if n['id'] not in ids]
+                self.persist()
 
     def preview_pdf(self):
         if self.direct:return None
@@ -489,8 +519,10 @@ class Studio:
         excluded=[]
         files=(await asyncio.to_thread(source_files, self.engine.manuscript, excluded,
                                        self.direct, self.direct) if include_files else {})
-        return {'project':str(self.engine.manuscript),'main':self.engine.main,'session':self.manifest.get('session'),
-                'chatURL':f'http://127.0.0.1:{self.port}/sessions/{self.manifest["session"]}#token={self.token}' if self.token else None,
+        session=self.manifest.get('session')
+        chat_path=f'/sessions/{session}' if session else '/'
+        return {'project':str(self.engine.manuscript),'main':self.engine.main,'session':session,
+                'chatURL':f'http://127.0.0.1:{self.port}{chat_path}#token={self.token}' if self.token else None,
                 'busy':await self.busy() if self.token else False,'error':self.error,
                 'preview':None if self.direct else self.manifest.get('preview'),'pending':self.manifest.get('pending',[]),
                 'direct':self.direct,'cwd':str(self.work),
@@ -513,7 +545,8 @@ class Studio:
             raise TaskError('未知工作台操作。')
         body=await request.json()
         if action=='select':await self.select(body['session'])
-        elif action=='new':await self.new_session()
+        elif action=='route':return web.json_response(await self.create_route(body['session']))
+        elif action=='invalidate':self.route_epoch+=1;self.routes.clear()
         elif action=='freeze':await self.freeze()
         elif action=='sync':await self.sync()
         elif action=='view':
@@ -524,8 +557,12 @@ class Studio:
                 if not task.get('studio') or not task.get('compile',{}).get('success'):raise TaskError('此版本没有可用的 PDF。')
             self.manifest['preview']=ident;self.persist()
         elif action=='note':
+            route=str(body.get('route',''))
+            self.resolve_route(route)
+            if body.get('digest') != self.service.pdf_digest:
+                raise TaskError('PDF 已更新，批注未发送；请重新划选。')
             note={'id':uuid.uuid4().hex,'quote':str(body.get('quote',''))[:16000],'text':str(body.get('text',''))[:16000],
-                  'digest':body.get('digest'),'preview':self.manifest.get('preview')}
+                  'digest':body.get('digest'),'preview':self.manifest.get('preview'),'route':route}
             self.manifest.setdefault('pending',[]).append(note);self.persist()
             if body.get('send'):
                 await self.send_pending()

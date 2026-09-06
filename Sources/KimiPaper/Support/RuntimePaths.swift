@@ -56,7 +56,8 @@ struct RuntimePaths {
     }
 
     func example() throws -> URL {
-        let dir = support.appendingPathComponent("示例论文")
+        let dir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Documents/Kimi Paper/示例论文")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let main = dir.appendingPathComponent("main.tex")
         if !FileManager.default.fileExists(atPath: main.path) {

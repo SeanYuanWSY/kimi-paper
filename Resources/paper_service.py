@@ -36,6 +36,9 @@ class PaperService(TexMcpWebServer):
         self.engine = Engine(self.watch_dir, str(self.main_file.relative_to(self.watch_dir)), state,
                              config.compiler, self.applied, self.prepare_effects, self.recover_effects)
         studio_mode = os.environ.get("KIMI_PAPER_STUDIO")
+        self.viewer_mode = os.environ.get("KIMI_PAPER_VIEWER") == "1"
+        self.control_token = os.environ.get("KIMI_PAPER_CONTROL_TOKEN")
+        self.maintenance_tokens = {}
         self.studio = Studio(self, direct=studio_mode == "direct") if studio_mode in {"1", "direct"} else None
         self.catalog_task = None
         self.focused_task = None
@@ -91,9 +94,10 @@ class PaperService(TexMcpWebServer):
                         raise web.HTTPUnauthorized(text='Authentication required')
                 if request.path == '/static/viewer.js':
                     source = (STATIC_DIR / 'viewer.js').read_text()
-                    extra = '\n'+(RESOURCES/'paper_studio_viewer.js').read_text() if self.studio else ''
-                    flags = 'window.KP_STUDIO=true;\n' if self.studio else ''
-                    if self.studio and self.studio.direct:
+                    enhanced = self.studio is not None or self.viewer_mode
+                    extra = '\n'+(RESOURCES/'paper_studio_viewer.js').read_text() if enhanced else ''
+                    flags = 'window.KP_STUDIO=true;\n' if enhanced else ''
+                    if self.viewer_mode or (self.studio and self.studio.direct):
                         flags += 'window.KP_DIRECT=true;\n'
                     return web.Response(text=flags+source + '\n' + (RESOURCES / 'paper_viewer.js').read_text()+extra, content_type='text/javascript')
                 return await handler(request)
@@ -116,6 +120,9 @@ class PaperService(TexMcpWebServer):
         app.router.add_get('/kp/git', self.git_status)
         app.router.add_post('/kp/git/preview', self.git_preview)
         app.router.add_post('/kp/git/execute', self.git_execute)
+        app.router.add_post('/kp/recompile', self.recompile)
+        app.router.add_get('/kp/paper-status', self.paper_status)
+        app.router.add_post('/kp/maintenance', self.maintenance_ticket)
         app.router.add_post('/kp/tasks/{id}/{action}', self.action)
         app.router.add_post('/kp/permission/{id}', self.permission)
         app.router.add_post('/kp/visible', self.visible)
@@ -126,6 +133,25 @@ class PaperService(TexMcpWebServer):
     async def studio_action(self, request):
         if not self.studio: raise TaskError('工作台未启用。')
         return await self.studio.handle(request)
+
+    async def recompile(self, request):
+        result=await self.do_compile()
+        if not result.success:raise TaskError('论文编译未通过，右侧继续保留上一次成功的 PDF。')
+        return web.json_response({'ok':True,'digest':self.pdf_digest})
+
+    async def paper_status(self, request):
+        return web.json_response({'digest':self.pdf_digest,'error':None})
+
+    async def maintenance_ticket(self, request):
+        supplied=request.headers.get('X-Kimi-Paper-Control','')
+        if (not self.viewer_mode or not self.control_token
+                or not secrets.compare_digest(supplied,self.control_token)):
+            raise TaskError('版本操作协调失败，请重新连接。')
+        now=asyncio.get_running_loop().time()
+        self.maintenance_tokens={key:value for key,value in self.maintenance_tokens.items() if value>now}
+        ticket=secrets.token_urlsafe(24)
+        self.maintenance_tokens[ticket]=now+30
+        return web.json_response({'ticket':ticket})
 
     async def studio_panel(self, request):
         return web.Response(text=(RESOURCES/'paper_studio_panel.html').read_text(),content_type='text/html')
@@ -213,6 +239,10 @@ class PaperService(TexMcpWebServer):
 
     async def git_execute(self, request):
         body=await request.json()
+        if getattr(self,'viewer_mode',False):
+            expiry=self.maintenance_tokens.pop(str(body.get('maintenance','')),0)
+            if expiry<asyncio.get_running_loop().time():
+                raise TaskError('Git 操作没有获得当前维护锁，请重新检查后执行。')
         if self.git_active:raise TaskError('另一项 Git 操作正在进行，请等待完成。')
         self.git_active=True
         restart_studio=False
@@ -432,9 +462,14 @@ class PaperService(TexMcpWebServer):
         # No HTTP operations or file watcher can race unfinished transaction recovery.
         await self.engine.finish_recovery()
         await super().setup(port)
+        sites=list(self._runner.sites)
+        server=getattr(sites[0], '_server', None) if len(sites)==1 else None
+        sockets=list(getattr(server, 'sockets', None) or [])
+        if len(sockets)!=1:raise TaskError('论文服务没有获得唯一的本地端口。')
+        self.config.port=int(sockets[0].getsockname()[1])
         if self.studio:await self.studio.start()
-        else:self.catalog_task = asyncio.create_task(self.engine.catalog())
-        print(f'Kimi Paper service: http://127.0.0.1:{port}/#token={self.token}', flush=True)
+        elif not self.viewer_mode:self.catalog_task = asyncio.create_task(self.engine.catalog())
+        print(f'Kimi Paper service: http://127.0.0.1:{self.config.port}/#token={self.token}', flush=True)
 
     async def cleanup(self):
         if self.studio:await self.studio.close()
@@ -447,14 +482,20 @@ class PaperService(TexMcpWebServer):
 
 
 async def main():
-    config = load_config()
+    runtime_root=os.environ.get('KIMI_PAPER_ROOT')
+    runtime_main=os.environ.get('KIMI_PAPER_MAIN')
+    config_path=Path(runtime_root)/'.tex-mcp-web.yaml' if runtime_root else None
+    config = load_config(config_path)
+    if runtime_main:config.main=runtime_main
+    config.port=0
+    config.auto_compile=False
     server = PaperService(config)
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, stop.set)
     try:
-        await server.setup(config.port)
+        await server.setup(0)
         await stop.wait()
     finally:
         await server.cleanup()

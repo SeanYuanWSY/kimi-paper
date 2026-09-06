@@ -23,9 +23,9 @@ struct WebPane: NSViewRepresentable {
     let onFailure: (String) -> Void
     var onLocation: ((URL) -> Void)? = nil
     var translation: TranslationService? = nil
-    var prepareAgents: (() async throws -> Void)? = nil
+    var agentAction: (([String: Any]) async throws -> [String: Any])? = nil
 
-    func makeCoordinator() -> Coordinator { Coordinator(url: url, onFailure: onFailure, translation: translation, prepareAgents: prepareAgents) }
+    func makeCoordinator() -> Coordinator { Coordinator(url: url, onFailure: onFailure, translation: translation, agentAction: agentAction) }
 
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
@@ -55,10 +55,8 @@ struct WebPane: NSViewRepresentable {
     private func installScripts(in config: WKWebViewConfiguration) {
         config.userContentController.removeAllUserScripts()
         let bootstrap = """
-        localStorage.setItem('sidebarCollapsed', '1');
+        localStorage.setItem('kimi-web.onboarded', '1');
         if (location.pathname.startsWith('/sessions/')) {
-          localStorage.setItem('kimi-web.onboarded', '1');
-          localStorage.setItem('kimi-web.sidebar-collapsed', 'true');
           document.addEventListener('DOMContentLoaded', () => {
             const style = document.createElement('style');
             // WKWebView can pause the animation frame that finishes Vue's ready-state fade.
@@ -123,10 +121,10 @@ struct WebPane: NSViewRepresentable {
         var revision: UUID?
         let onFailure: (String) -> Void
         let translation: TranslationService?
-        let prepareAgents: (() async throws -> Void)?
-        init(url: URL, onFailure: @escaping (String) -> Void, translation: TranslationService?, prepareAgents: (() async throws -> Void)?) {
+        let agentAction: (([String: Any]) async throws -> [String: Any])?
+        init(url: URL, onFailure: @escaping (String) -> Void, translation: TranslationService?, agentAction: (([String: Any]) async throws -> [String: Any])?) {
             allowedPort = url.port; self.onFailure = onFailure
-            self.translation = translation; self.prepareAgents = prepareAgents
+            self.translation = translation; self.agentAction = agentAction
         }
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage,
@@ -137,9 +135,8 @@ struct WebPane: NSViewRepresentable {
             }
             Task { @MainActor in
                 do {
-                    if body["operation"] as? String == "prepareAgents" {
-                        try await prepareAgents?()
-                        replyHandler(["ready": true], nil)
+                    if ["sendAnnotation", "executeGit"].contains(body["operation"] as? String ?? "") {
+                        replyHandler(try await agentAction?(body) ?? [:], nil)
                     } else { replyHandler(try await translation.handle(body), nil) }
                 } catch { replyHandler(nil, (error as? AppFailure)?.errorDescription ?? "请求未完成，请检查连接或设置。") }
             }

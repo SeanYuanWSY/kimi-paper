@@ -57,4 +57,13 @@ final class ManagedProcess {
         try? control.fileHandleForWriting.close()
         // Closing this dedicated pipe asks the supervisor to terminate only its owned group.
     }
+
+    func stopAndWait() async throws {
+        stop()
+        for _ in 0..<120 {
+            if !process.isRunning { return }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        throw AppFailure.message("本地服务未能及时停止，请稍后重试。")
+    }
 }

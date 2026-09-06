@@ -9,7 +9,7 @@ submitCompose = async function(event) {
     const anchor=state.pendingAnchor||{};
     const quote=anchor.text||anchor.exact||anchor.quote||JSON.stringify(anchor);
     const deferred=!globalThis.KP_DIRECT&&$('#kp-deferred').checked;
-    await kpRequest('/kp/studio/note',{quote,text,digest:state.pdfDigest,send:!deferred});
+    await kpNative({operation:'sendAnnotation',quote,text,digest:state.pdfDigest});
     $('#compose-dialog').close();clearPendingSelection();
     $('#kp-reading-message').textContent=deferred?'批注已保存，可继续添加。':'已发送到左侧 Kimi，完成后会刷新 PDF。';
   }catch(error){$('#kp-reading-message').textContent=error.message;}
@@ -21,7 +21,7 @@ document.addEventListener('DOMContentLoaded',()=>{
   $('#compose-title').textContent=globalThis.KP_DIRECT?'让 Kimi 直接修改这段':'发给当前 Kimi 会话';
   const legend=document.querySelector('fieldset legend');if(legend)legend.textContent='处理方式';
   const deferred=$('#kp-deferred');if(deferred.nextSibling)deferred.nextSibling.textContent=' 先保存，稍后一起发给 Kimi';
-  if(globalThis.KP_DIRECT){deferred.parentElement.hidden=true;const translationToggle=$('#kp-selection-enabled');if(translationToggle)translationToggle.parentElement.hidden=true;}
+  if(globalThis.KP_DIRECT)deferred.parentElement.hidden=true;
   $('#compose-cancel').textContent='取消';
   $('#compose-text').placeholder='希望这段如何修改？直接写要求即可。';
   $('#compose-submit').textContent=globalThis.KP_DIRECT?'开始修改':'提交批注';
@@ -33,7 +33,7 @@ let kpStudioRefreshing=false;
 setInterval(async()=>{
   if(kpStudioRefreshing||!state.paper)return;
   kpStudioRefreshing=true;
-  try{const data=await kpRequest('/kp/studio/status',undefined,'GET');
+  try{const data=await kpRequest('/kp/paper-status',undefined,'GET');
     if(globalThis.KP_DIRECT&&data.error)$('#kp-reading-message').textContent=data.error+' 右侧仍显示上一次成功编译的 PDF。';
     $('#pdf-viewer').hidden=!data.digest;$('#kp-empty-project').hidden=!!data.digest;
     if(!data.digest){if(state.pdfDigest){kpClosePopup();await refreshPaper();}}

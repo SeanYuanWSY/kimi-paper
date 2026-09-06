@@ -29,7 +29,11 @@ final class LocalAPI {
     }
 
     func request(_ path: String, method: String = "GET", body: [String: Any]? = nil) async throws -> [String: Any] {
-        var request = URLRequest(url: base.appendingPathComponent("api/v1/" + path))
+        let pieces = path.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
+        var parts = URLComponents(url: base.appendingPathComponent("api/v1/" + pieces[0]), resolvingAgainstBaseURL: false)!
+        if pieces.count == 2 { parts.percentEncodedQuery = String(pieces[1]) }
+        guard let url = parts.url else { throw AppFailure.message("Kimi 请求地址无效。") }
+        var request = URLRequest(url: url)
         request.httpMethod = method
         request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
         if let body {
@@ -48,9 +52,9 @@ final class LocalAPI {
         return envelope["data"] as? [String: Any] ?? [:]
     }
 
-    func browserURL(sessionID: String) -> URL {
+    func browserURL(sessionID: String? = nil) -> URL {
         var parts = URLComponents(url: base, resolvingAgainstBaseURL: false)!
-        parts.path = "/sessions/" + sessionID
+        parts.path = sessionID.map { "/sessions/" + $0 } ?? "/"
         parts.fragment = "token=" + token
         return parts.url!
     }

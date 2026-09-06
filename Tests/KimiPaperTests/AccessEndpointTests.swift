@@ -4,6 +4,7 @@ import XCTest
 final class AccessEndpointTests: XCTestCase {
     func testOnlyOwnedLoopbackEndpointCanReceiveAuthorization() {
         XCTAssertNotNil(AccessEndpoint.validated("http://127.0.0.1:12345/#token=example", port: 12345))
+        XCTAssertNotNil(AccessEndpoint.validated("http://127.0.0.1:54321/#token=dynamic"))
         for candidate in [
             "https://example.org:12345/#token=example",
             "http://127.0.0.1:23456/#token=example",

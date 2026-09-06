@@ -37,7 +37,21 @@ class PrepareWorkspaceTests(unittest.TestCase):
                 result = prepare(project, 'tex/main.tex')
             self.assertEqual(result['root'], str(project))
             self.assertEqual(result['main'], 'tex/main.tex')
-            self.assertTrue(1 <= result['port'] <= 65535)
+            self.assertEqual(result['port'], 0)
+            self.assertFalse((project / '.tex-mcp-web.yaml').exists())
+
+    def test_opening_project_does_not_rewrite_existing_tex_config(self):
+        with tempfile.TemporaryDirectory() as folder:
+            home = Path(folder).resolve() / 'home'
+            project = home / 'projects/paper'
+            project.mkdir(parents=True)
+            config = project / '.tex-mcp-web.yaml'
+            original = b'main: old.tex\ncompiler: latexmk\n'
+            config.write_bytes(original)
+            with patch('prepare_workspace.Path.home', return_value=home):
+                result = prepare(project, 'main.tex')
+            self.assertEqual(result['main'], 'main.tex')
+            self.assertEqual(config.read_bytes(), original)
 
 
 if __name__ == '__main__':

@@ -3,12 +3,13 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'Resources'))
 from paper_engine import Engine
-from paper_studio import Studio
+from paper_studio import Studio, kimi_web_command
 from paper_tasks import TaskError, materialize, atomic_json
 
 
@@ -179,37 +180,93 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(restored.work, self.studio.work)
         await restored.close()
 
-    async def test_session_metadata_must_match_draft_not_formal_directory(self):
+    async def test_session_selection_accepts_native_kimi_workspaces_but_rejects_invalid_cwd(self):
         self.studio.request = AsyncMock(return_value={'metadata': {'cwd': str(self.paper)}})
-        with self.assertRaises(TaskError):
-            await self.studio.select('fictional-session')
-        self.assertIsNone(self.studio.manifest['session'])
-        self.studio.request.return_value = {'metadata': {'cwd': str(self.studio.work)}}
         await self.studio.select('fictional-session')
         self.assertEqual(self.studio.manifest['session'], 'fictional-session')
+        self.studio.request.return_value = {'metadata': {'cwd': str(self.studio.work)}}
+        await self.studio.select('another-session')
+        self.assertEqual(self.studio.manifest['session'], 'another-session')
+        self.studio.request.return_value = {'metadata': {'cwd': 'relative/path'}}
+        with self.assertRaises(TaskError):
+            await self.studio.select('invalid-cwd')
         with self.assertRaises(TaskError):
             await self.studio.select('../other-session')
 
+    async def test_switching_native_session_invalidates_an_old_annotation_route(self):
+        self.studio.request = AsyncMock(side_effect=[
+            {'id':'session-a','metadata':{'cwd':str(self.paper)}},
+            {'id':'session-b','metadata':{'cwd':str(self.root / 'another-project')}},
+        ])
+        route = (await self.studio.create_route('session-a'))['route']
+        self.assertEqual(self.studio.resolve_route(route), 'session-a')
+        await self.studio.select('session-b')
+        with self.assertRaises(TaskError):
+            self.studio.resolve_route(route)
+
+    async def test_no_selected_session_uses_native_kimi_home(self):
+        self.studio.manifest['session'] = None
+        self.studio.token = 'fictional-token'; self.studio.port = 43210
+        self.studio.busy = AsyncMock(return_value=False)
+        state = await self.studio.state(False)
+        self.assertEqual(state['chatURL'], 'http://127.0.0.1:43210/#token=fictional-token')
+
+    async def test_legacy_missing_session_falls_back_to_native_home(self):
+        self.studio.manifest['session'] = 'legacy-paper-session'
+        self.studio.request = AsyncMock(side_effect=TaskError('fictional missing session'))
+        await self.studio.restore_session()
+        self.assertIsNone(self.studio.manifest['session'])
+        restored = json.loads(self.studio.manifest_path.read_text())
+        self.assertIsNone(restored['session'])
+
+    def test_native_kimi_launch_keeps_visible_permission_policy(self):
+        command = kimi_web_command()
+        self.assertEqual(command[1:], ['web','--port','0','--host','127.0.0.1','--no-open'])
+        joined = ' '.join(command).lower()
+        for forbidden in ('sandbox-exec','yolo','auto-approve','dangerously'):
+            self.assertNotIn(forbidden, joined)
+
     async def test_pending_notes_added_during_send_are_retained_and_failure_keeps_batch(self):
-        self.studio.manifest['pending'] = [{'id': 'old', 'text': 'first'}]
-        async def sending(text, notes):
-            self.assertEqual([n['id'] for n in notes], ['old'])
-            self.studio.manifest['pending'].append({'id': 'new', 'text': 'second'})
+        route='fictional-route'
+        self.studio.routes[route]={'session':'session-a','epoch':self.studio.route_epoch,'created':time.time()}
+        self.studio.manifest['pending'] = [{'id': 'old', 'text': 'first', 'route': route}]
+        sent=[]
+        async def sending(text, notes, sid=None):
+            sent.append([n['id'] for n in notes])
+            self.assertEqual(sid,'session-a')
+            if len(sent)==1:
+                self.studio.manifest['pending'].append({'id': 'new', 'text': 'second', 'route': route})
         self.studio.send = sending
         await self.studio.send_pending()
-        self.assertEqual([n['id'] for n in self.studio.manifest['pending']], ['new'])
+        self.assertEqual(sent,[['old'],['new']])
+        self.assertEqual(self.studio.manifest['pending'], [])
+        self.studio.manifest['pending'] = [{'id': 'failed', 'text': 'third', 'route': route}]
         self.studio.send = AsyncMock(side_effect=TaskError('fictional failure'))
         with self.assertRaises(TaskError):
             await self.studio.send_pending()
-        self.assertEqual([n['id'] for n in self.studio.manifest['pending']], ['new'])
+        self.assertEqual([n['id'] for n in self.studio.manifest['pending']], ['failed'])
 
     async def test_unknown_or_truncated_session_state_fails_closed(self):
         for response in ({}, {'items': [{}]}, {'items': [{'busy': False}] * 100}):
             self.studio.request = AsyncMock(return_value=response)
             with self.assertRaises(TaskError):
                 await self.studio.busy()
-        self.studio.request = AsyncMock(return_value={'items': [{'busy': False}, {'busy': True}]})
+        self.studio.request = AsyncMock(return_value={'items': [
+            {'id':'session-a','busy': False}, {'id':'session-b','busy': True}], 'has_more':False})
         self.assertTrue(await self.studio.busy())
+
+    async def test_busy_paginates_all_native_sessions_and_fails_on_repeated_cursor(self):
+        self.studio.request = AsyncMock(side_effect=[
+            {'items':[{'id':'session-a','busy':False}], 'has_more':True},
+            {'items':[{'id':'session-b','main_turn_active':False}], 'has_more':False},
+        ])
+        self.assertFalse(await self.studio.busy())
+        self.assertIn('before_id=session-a',self.studio.request.await_args_list[1].args[0])
+        self.studio.request = AsyncMock(side_effect=[
+            {'items':[{'id':'session-a','busy':False}], 'has_more':True},
+            {'items':[{'id':'session-a','busy':False}], 'has_more':True},
+        ])
+        with self.assertRaises(TaskError):await self.studio.busy()
 
     async def test_stdout_drain_consumes_all_remaining_bytes(self):
         reader = asyncio.StreamReader()
@@ -246,8 +303,8 @@ class DirectStudioTests(unittest.IsolatedAsyncioTestCase):
         await self.studio.select('direct-session')
         self.assertEqual(self.studio.manifest['session'], 'direct-session')
         self.studio.request.return_value = {'metadata': {'cwd': str(self.studio.run / 'work')}}
-        with self.assertRaises(TaskError):
-            await self.studio.select('old-draft-session')
+        await self.studio.select('other-workspace-session')
+        self.assertEqual(self.studio.manifest['session'],'other-workspace-session')
 
     async def test_direct_compile_records_recoverable_change_and_undo_restores_source(self):
         self.studio.busy = AsyncMock(return_value=False)
@@ -269,12 +326,12 @@ class DirectStudioTests(unittest.IsolatedAsyncioTestCase):
         self.studio.manifest['session'] = 'direct-session'
         selected = {'metadata': {'cwd': str(self.paper)},
                     'agent_config': {'model': 'kimi-for-coding/k3-256k', 'thinking': 'high'}}
-        self.studio.select = AsyncMock(return_value=selected)
-        self.studio.request = AsyncMock(return_value={})
+        self.studio.request = AsyncMock(side_effect=[selected, {}])
         await self.studio.send('', [{'quote': 'Original sentence.', 'text': 'Make it precise.'}])
-        payload = self.studio.request.await_args.args[1]
+        payload = self.studio.request.await_args_list[1].args[1]
         prompt = payload['content'][0]['text']
-        self.assertIn('直接在当前项目目录中', prompt)
+        self.assertIn('绑定论文根目录：'+str(self.paper), prompt)
+        self.assertIn('主文件：main.tex', prompt)
         self.assertIn('Original sentence.', prompt)
         self.assertIn('Make it precise.', prompt)
 
