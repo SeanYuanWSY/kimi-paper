@@ -53,14 +53,18 @@ final class PaperWorkspace: ObservableObject {
 
     func chooseProject() {
         let panel = NSOpenPanel()
-        panel.title = "选择 Kimi 的工作目录"; panel.canChooseDirectories = true; panel.canChooseFiles = false
-        panel.canCreateDirectories = true; panel.prompt = "打开项目"
-        panel.message = "Kimi 会直接在这个目录工作。请选择包含论文、数据、图表和脚本的原始项目目录。"
+        panel.title = "选择研究工作区"; panel.canChooseDirectories = true; panel.canChooseFiles = false
+        panel.canCreateDirectories = true; panel.prompt = "设为工作区"
+        panel.message = "这里是 Kimi 的工作位置，不必是 LaTeX 文件夹。可以选择同时包含 paper、data、figures 等目录的上级项目文件夹。"
         guard panel.runModal() == .OK, let root = panel.url else { return }
+        if let current = paper, current.path.hasPrefix(root.path + "/") {
+            start(current, root: root); return
+        }
         let main = root.appendingPathComponent("main.tex")
         if FileManager.default.fileExists(atPath: main.path) { start(main, root: root); return }
         let picker = NSOpenPanel(); picker.directoryURL = root
-        picker.title = "选择主文件；新项目可取消，稍后生成 main.tex"
+        picker.title = "在工作区中选择论文主文件"
+        picker.message = "main.tex 可以位于 paper、manuscript 等任意子目录。新项目可以取消，稍后由 Kimi 创建工作区根目录下的 main.tex。"
         picker.allowedContentTypes = [UTType(filenameExtension: "tex") ?? .plainText]
         if picker.runModal() == .OK, let file = picker.url, file.path.hasPrefix(root.path + "/") { start(file, root: root) }
         else { start(main, root: root) }
@@ -72,7 +76,7 @@ final class PaperWorkspace: ObservableObject {
         panel.prompt = "打开论文"
         panel.allowedContentTypes = [UTType(filenameExtension: "tex") ?? .plainText]
         panel.allowsMultipleSelection = false
-        panel.message = "选择 main.tex 等主文件。如果主文件不在当前工作目录内，Kimi 会切换到它所在的项目。"
+        panel.message = "选择 main.tex 等主文件。主文件位于当前研究工作区内时，Kimi 的工作区不会变化。"
         if panel.runModal() == .OK, let url = panel.url {
             let root = projectRoot.flatMap { url.path.hasPrefix($0.path + "/") ? $0 : nil }
             start(url, root: root)

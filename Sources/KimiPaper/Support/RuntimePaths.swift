@@ -42,6 +42,8 @@ struct RuntimePaths {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         env["PATH"] = "/Library/TeX/texbin:/opt/homebrew/bin:/usr/local/bin:\(home)/.local/bin:\(home)/.npm-global/bin:\(home)/.kimi-code/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         env["PYTHONUNBUFFERED"] = "1"
+        // The signed application bundle must stay immutable while bundled helpers run.
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
         // The bundled interpreter owns its imports; never inherit another Python environment.
         env.removeValue(forKey: "PYTHONHOME")
         env.removeValue(forKey: "PYTHONPATH")

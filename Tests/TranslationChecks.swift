@@ -44,6 +44,7 @@ final class TranslationStub: URLProtocol {
 
 @main struct TranslationChecks {
     @MainActor static func main() async throws {
+        precondition(RuntimePaths().environment()["PYTHONDONTWRITEBYTECODE"] == "1", "Bundled Python must not invalidate the app signature")
         let suite = "local.kimi-paper.tests." + UUID().uuidString
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }

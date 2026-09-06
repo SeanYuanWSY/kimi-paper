@@ -11,7 +11,8 @@ struct ContentView: View {
                 Button { workspace.chooseProject() } label: {
                     HStack {
                         Image(systemName: "folder")
-                        Text(workspace.projectRoot?.lastPathComponent ?? "选择 Kimi 工作目录").fontWeight(.semibold)
+                        Text("工作区").foregroundStyle(.secondary)
+                        Text(workspace.projectRoot?.lastPathComponent ?? "选择").fontWeight(.semibold)
                         Image(systemName: "chevron.down").font(.caption)
                     }
                 }.buttonStyle(.plain).disabled(workspace.connecting || workspace.busy)
@@ -25,7 +26,7 @@ struct ContentView: View {
                 }
                 Button { panel = "git" } label: { Label("GitHub", systemImage: "arrow.triangle.branch") }
                 Menu {
-                    Button("更换 Kimi 工作目录…") { workspace.chooseProject() }
+                    Button("更换研究工作区…") { workspace.chooseProject() }
                     Button("更换 LaTeX 主文件…") { workspace.choosePaper() }
                     Divider()
                     Button("撤销最近一次 Kimi 修改") { workspace.studioAction("undo") }
@@ -60,7 +61,7 @@ struct ContentView: View {
                     HStack {
                         Text("论文").fontWeight(.semibold)
                         Spacer()
-                        Text(workspace.paper?.lastPathComponent ?? "").foregroundStyle(.secondary)
+                        Text(paperLocation).foregroundStyle(.secondary)
                         Button { workspace.studioAction("freeze") } label: { Image(systemName: "arrow.clockwise") }
                             .buttonStyle(.borderless).help("重新编译 PDF").disabled(workspace.busy)
                     }.font(.caption).padding(10)
@@ -87,12 +88,19 @@ struct ContentView: View {
         .sheet(isPresented: $showHelp) {
             VStack(alignment: .leading, spacing: 18) {
                 Text("从初稿写到定稿").font(.title2.bold())
-                Text("顶部选择的就是 Kimi 实际工作目录。请选择包含论文、数据、图表和相关脚本的真实项目目录。\n\n左侧用 Kimi 直接起草或做大修改；右侧划选一段写批注，会直接交给当前会话修改。Kimi 一轮结束后会自动重新编译 PDF。\n\nGitHub 按钮用于提交、拉取和推送。更多菜单中保留翻译设置和最近一次修改的撤销入口。")
+                Text("顶部的工作区是 Kimi 实际工作的研究项目目录，不必是 LaTeX 文件夹。例如工作区可以包含 paper、data 和 figures，论文主文件则选择 paper/main.tex。\n\n左侧用 Kimi 直接起草或做大修改；右侧划选一段写批注，会直接交给当前会话修改。Kimi 一轮结束后会自动重新编译 PDF。\n\nGitHub 按钮用于提交、拉取和推送。更多菜单中保留翻译设置和最近一次修改的撤销入口。")
                 Button("明白了") { showHelp = false }
             }.padding(28).frame(width: 540)
         }
     }
     private func empty(_ title: String, symbol: String) -> some View {
         VStack(spacing: 16) { Image(systemName: symbol).font(.largeTitle); Text(workspace.connecting ? "正在连接…" : title) }.foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+    private var paperLocation: String {
+        guard let paper = workspace.paper else { return "尚未选择论文" }
+        guard let root = workspace.projectRoot, paper.path.hasPrefix(root.path + "/") else {
+            return paper.lastPathComponent
+        }
+        return String(paper.path.dropFirst(root.path.count + 1))
     }
 }
