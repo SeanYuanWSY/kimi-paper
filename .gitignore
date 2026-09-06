@@ -17,3 +17,7 @@ credentials/
 oauth/
 *.log
 *.pdf
+
+# Local browser verification output
+.playwright-cli/
+output/playwright/

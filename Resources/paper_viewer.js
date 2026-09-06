@@ -130,7 +130,7 @@ submitCompose = async function(event) {
 };
 
 let kpTranslationEnabled = false, kpReadKey = "", kpTranslateRevision = 0, kpScrollTimer, kpLastText = "";
-let kpSelectionEnabled = true, kpSelectionScope = null, kpSelectionUnsubscribe = [];
+let kpSelectionEnabled = sessionStorage.getItem("kp.selection-enabled") !== "false", kpSelectionScope = null, kpSelectionUnsubscribe = [];
 let kpPopupRevision = 0, kpPopupTimer, kpPopupBusy = false, kpPopupQueued = null, kpPopupText = "";
 let kpPopupPoint = {x: 100, y: 100}, kpPopupDigest = null;
 
@@ -300,8 +300,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     h("div", {id: "kp-translation-output", "aria-live": "polite", style: {whiteSpace: "pre-wrap", lineHeight: "1.8"}}));
   $("#app").insertBefore(translation, $(".layout"));
   $(".topbar").after(h("div", {id: "kp-reading-status", role: "status", style: {padding: "3px 14px", fontSize: "12px"}}));
-  $("#kp-reading-status").append(h("label", {}, h("input", {id: "kp-selection-enabled", type: "checkbox", checked: true}), " 划选后自动翻译"), h("span", {id: "kp-reading-message", style: {marginLeft: "12px"}}));
-  $("#kp-selection-enabled").addEventListener("change", event => {kpSelectionEnabled = event.target.checked; kpClosePopup();});
+  $("#kp-reading-status").append(h("label", {}, h("input", {id: "kp-selection-enabled", type: "checkbox", checked: kpSelectionEnabled}), " 划选后自动翻译"), h("span", {id: "kp-reading-message", style: {marginLeft: "12px"}}));
+  $("#kp-selection-enabled").addEventListener("change", event => {kpSelectionEnabled = event.target.checked; sessionStorage.setItem("kp.selection-enabled", String(kpSelectionEnabled)); kpClosePopup();});
   $("#kp-translation-enabled").addEventListener("change", e => {
     kpTranslationEnabled = e.target.checked;
     ++kpTranslateRevision; kpReadKey = ""; clearTimeout(kpScrollTimer);
@@ -323,7 +323,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     try {await kpRequest("/kp/models/refresh", {}); await loadModels();}
     catch (error) {$("#kp-model-status").textContent = error.message;}
   }}));
-  loadModels();
+  if (!window.KP_STUDIO) loadModels();
   setInterval(() => {
     kpBindSelection();
     if (!kpTranslationEnabled || !state.scroll || !state.layoutReady) return;

@@ -21,6 +21,7 @@ struct WebPane: NSViewRepresentable {
     let url: URL
     let revision: UUID
     let onFailure: (String) -> Void
+    var onLocation: ((URL) -> Void)? = nil
     var translation: TranslationService? = nil
     var prepareAgents: (() async throws -> Void)? = nil
 
@@ -33,6 +34,9 @@ struct WebPane: NSViewRepresentable {
         installScripts(in: config)
         if translation != nil { config.userContentController.addScriptMessageHandler(context.coordinator, contentWorld: .page, name: "paper") }
         let view = AttachedWebView(frame: .zero, configuration: config)
+        context.coordinator.locationObservation = view.observe(\.url, options: [.new]) { _, change in
+            if let address = change.newValue ?? nil { DispatchQueue.main.async { onLocation?(address) } }
+        }
         view.navigationDelegate = context.coordinator
         view.uiDelegate = context.coordinator
         view.allowsBackForwardNavigationGestures = false
@@ -113,6 +117,7 @@ struct WebPane: NSViewRepresentable {
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandlerWithReply {
+        var locationObservation: NSKeyValueObservation?
         var allowedPort: Int?
         var lastURL: URL?
         var revision: UUID?
@@ -155,6 +160,21 @@ struct WebPane: NSViewRepresentable {
                     NSWorkspace.shared.open(url)
                 }
             }
+        }
+
+        func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String,
+                     initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
+            guard frame.isMainFrame, let source = frame.request.url, permitted(source) else { completionHandler(false); return }
+            let alert = NSAlert(); alert.messageText = "确认操作"
+            alert.informativeText = String(message.prefix(2000))
+            alert.addButton(withTitle: "确认"); alert.addButton(withTitle: "取消")
+            completionHandler(alert.runModal() == .alertFirstButtonReturn)
+        }
+
+        func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String,
+                     initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) {
+            if frame.isMainFrame, let source = frame.request.url, permitted(source) { onFailure(String(message.prefix(2000))) }
+            completionHandler()
         }
 
         func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {

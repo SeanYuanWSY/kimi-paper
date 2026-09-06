@@ -20,6 +20,7 @@ from paper_tasks import TaskError, digest, materialize, fingerprint, StatusFinge
 from paper_engine import Engine, paper_files, compile_copy
 from paper_reading import ReadingError, visible_paragraphs
 from paper_git import PaperGit
+from paper_studio import Studio
 
 RESOURCES = Path(__file__).resolve().parent
 
@@ -28,11 +29,13 @@ class PaperService(TexMcpWebServer):
     def __init__(self, config):
         self.token = secrets.token_urlsafe(32)
         self.engine = None
+        self.studio = None
         super().__init__(config)
         identity = digest(str(self.main_file.resolve()).encode())[:24]
         state = Path.home() / 'Library/Application Support/Kimi Paper/projects' / identity
         self.engine = Engine(self.watch_dir, str(self.main_file.relative_to(self.watch_dir)), state,
                              config.compiler, self.applied, self.prepare_effects, self.recover_effects)
+        self.studio = Studio(self) if os.environ.get("KIMI_PAPER_STUDIO") == "1" else None
         self.catalog_task = None
         self.focused_task = None
         self.paper_git = PaperGit(self.watch_dir)
@@ -84,7 +87,8 @@ class PaperService(TexMcpWebServer):
                         raise web.HTTPUnauthorized(text='Authentication required')
                 if request.path == '/static/viewer.js':
                     source = (STATIC_DIR / 'viewer.js').read_text()
-                    return web.Response(text=source + '\n' + (RESOURCES / 'paper_viewer.js').read_text(), content_type='text/javascript')
+                    extra = '\n'+(RESOURCES/'paper_studio_viewer.js').read_text() if self.studio else ''
+                    return web.Response(text=('window.KP_STUDIO=true;\n' if self.studio else '')+source + '\n' + (RESOURCES / 'paper_viewer.js').read_text()+extra, content_type='text/javascript')
                 return await handler(request)
             except TaskError as error:
                 return web.json_response({'error': str(error)}, status=409)
@@ -93,6 +97,8 @@ class PaperService(TexMcpWebServer):
 
         app.middlewares.append(integration)
         app.router.add_get('/workbench', self.workbench)
+        app.router.add_route('*','/kp/studio/{action}',self.studio_action)
+        app.router.add_get('/studio-panel',self.studio_panel)
         app.router.add_get('/kp/models', self.models)
         app.router.add_post('/kp/models/refresh', self.refresh_models)
         app.router.add_get('/kp/tasks', self.tasks)
@@ -109,6 +115,27 @@ class PaperService(TexMcpWebServer):
         app.router.add_get('/kp/preferences', self.preferences)
         app.router.add_put('/kp/preferences', self.preferences)
         return app
+
+    async def studio_action(self, request):
+        if not self.studio: raise TaskError('工作台未启用。')
+        return await self.studio.handle(request)
+
+    async def studio_panel(self, request):
+        return web.Response(text=(RESOURCES/'paper_studio_panel.html').read_text(),content_type='text/html')
+
+    async def _handle_pdf(self, request):
+        pdf=self.studio.preview_pdf() if self.studio else None
+        if pdf:return web.FileResponse(pdf,headers={'Cache-Control':'no-store'})
+        return await super()._handle_pdf(request)
+
+    async def _handle_paper(self, request):
+        response=await super()._handle_paper(request)
+        if self.studio and self.studio.preview_pdf():
+            data=json.loads(response.body)
+            data['pdf_digest']=self.studio.manifest['preview']
+            data['last_compile']={'success':True,'errors':[],'warnings':[]}
+            return web.json_response(data)
+        return response
 
     async def workbench(self, request):
         return web.Response(text=(RESOURCES / 'workbench.html').read_text(), content_type='text/html')
@@ -188,6 +215,7 @@ class PaperService(TexMcpWebServer):
                     result=await self.do_compile()
                     if not result.success:
                         message+=' Git 已更新，但论文编译未通过，请检查右侧错误；未自动回退 Git。'
+                    if self.studio:message+=' 正式项目已更新；持久草稿已保留，请在修改记录中使用从正式稿更新草稿。'
         finally:self.git_active=False
         return web.json_response({'message':message})
 
@@ -226,7 +254,14 @@ class PaperService(TexMcpWebServer):
         await self.sync_comment_revisions()
         task_id, action = request.match_info['id'], request.match_info['action']
         if action == 'apply':
-            await self.engine.apply(task_id)
+            if self.studio:
+                async with self.studio.lock:
+                    if await self.studio.busy():raise TaskError('请等待 Kimi 完成或停止后，再采纳此冻结版本。')
+                    await self.engine.apply(task_id)
+                    if self.engine.store.get(task_id).get('studio'):
+                        try:self.studio.adopted(task_id)
+                        except (OSError,TaskError):raise TaskError('正式稿已采纳并保存版本，但工作台基线更新失败；请重新连接后从正式稿更新草稿。')
+            else: await self.engine.apply(task_id)
         elif action == 'undo':
             await self.engine.undo(task_id)
         elif action == 'cancel':
@@ -257,14 +292,14 @@ class PaperService(TexMcpWebServer):
         if engine:
             for path in engine.transactions():
                 effects = json.loads(path.read_text()).get('effects')
-                if effects and effects['comment'] == comment['id']:
+                if effects and not effects.get('studio') and effects['comment'] == comment['id']:
                     own_entries.append(effects['after']['thread'][-1])
         thread = [entry for entry in comment.get('thread', []) if entry not in own_entries]
         return digest(json.dumps(thread, sort_keys=True, ensure_ascii=False).encode())
 
     async def sync_comment_revisions(self):
         for task in self.engine.store.all():
-            if task['status'] in {'applied', 'undone', 'cancelled'} or task.get('commentChanged'):
+            if task.get('studio') or task['status'] in {'applied', 'undone', 'cancelled'} or task.get('commentChanged'):
                 continue
             current = self.comments.get(task['comment']['id'])
             revision = self.comment_revision(current.to_dict()) if current else None
@@ -289,6 +324,7 @@ class PaperService(TexMcpWebServer):
         return {key: comment.get(key) for key in ('thread', 'status')}
 
     def prepare_effects(self, task, undo, transaction_id):
+        if task.get('studio'):return {'studio':True}
         current = self.comments.get(task['comment']['id'])
         if current is None:
             raise TaskError('批注已删除，不能应用或撤销。')
@@ -330,14 +366,14 @@ class PaperService(TexMcpWebServer):
         result = await self.do_compile()
         if not result.success:
             raise TaskError('恢复正文后 PDF 编译失败，请修复论文后重新连接。')
-        self.write_comment_effect(journal['effects'], rollback=True)
+        if not journal['effects'].get('studio'):self.write_comment_effect(journal['effects'], rollback=True)
         await self.broadcast({'type': 'comments_changed'})
 
     async def applied(self, task, undo):
         result = await self.do_compile()
         if not result.success:
             raise TaskError('正式 PDF 未更新成功，请检查编译结果。')
-        self.write_comment_effect(task['_transaction']['effects'])
+        if not task.get('studio'):self.write_comment_effect(task['_transaction']['effects'])
         await self.broadcast({'type': 'comments_changed'})
 
     async def visible(self, request):
@@ -372,10 +408,12 @@ class PaperService(TexMcpWebServer):
         # No HTTP operations or file watcher can race unfinished transaction recovery.
         await self.engine.finish_recovery()
         await super().setup(port)
-        self.catalog_task = asyncio.create_task(self.engine.catalog())
+        if self.studio:await self.studio.start()
+        else:self.catalog_task = asyncio.create_task(self.engine.catalog())
         print(f'Kimi Paper service: http://127.0.0.1:{port}/#token={self.token}', flush=True)
 
     async def cleanup(self):
+        if self.studio:await self.studio.close()
         if self.catalog_task:
             self.catalog_task.cancel()
             await asyncio.gather(self.catalog_task, return_exceptions=True)

@@ -6,6 +6,7 @@ import difflib
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import signal
@@ -18,10 +19,13 @@ import uuid
 
 
 SOURCE_SUFFIXES = {'.tex', '.bib', '.sty', '.cls', '.bst', '.bbx', '.cbx', '.def', '.cfg', '.fd',
-                   '.png', '.jpg', '.jpeg', '.pdf', '.eps', '.svg', '.csv', '.tsv', '.dat', '.txt'}
-EDIT_SUFFIXES = {'.tex', '.bib', '.sty', '.cls', '.bst', '.bbx', '.cbx', '.def', '.cfg', '.fd', '.txt'}
+                   '.png', '.jpg', '.jpeg', '.pdf', '.eps', '.svg', '.csv', '.tsv', '.dat', '.txt',
+                   '.md', '.json', '.yaml', '.yml', '.xlsx', '.pptx', '.docx', '.ods', '.odt',
+                   '.webp', '.gif', '.tif', '.tiff', '.py', '.r', '.jl', '.ipynb'}
+EDIT_SUFFIXES = {'.tex', '.bib', '.sty', '.cls', '.bst', '.bbx', '.cbx', '.def', '.cfg', '.fd', '.txt', '.md', '.json', '.yaml', '.yml', '.csv', '.tsv', '.svg', '.py', '.r', '.jl', '.ipynb'}
 EXCLUDED = {'.git', '.kimi-code', '.codex', '.agents', '.tex-mcp-web', '.runtime', '.build',
-            'node_modules', '__pycache__', 'dist'}
+            'node_modules', '__pycache__', 'dist', 'build', 'cache', 'caches', 'venv', 'env',
+            'credentials', 'oauth', 'secrets', 'config', 'configuration'}
 
 
 class TaskError(Exception):
@@ -43,29 +47,72 @@ def atomic_json(path: Path, value):
     os.replace(temp, path)
 
 
-def source_files(root: Path) -> dict[str, bytes]:
-    """Copy bytes, never links; reject ambiguous or external dependencies explicitly."""
+def exclusion_reason(path: Path, directory=False):
+    """Classify by name before opening a file; excluded content is never inspected."""
+    if path.is_absolute() or not path.parts or '..' in path.parts:
+        return 'path outside project'
+    for part in path.parts:
+        if part.startswith('.'):
+            return 'hidden file or directory'
+        if part.lower() in EXCLUDED:
+            return 'configuration or runtime directory'
+        stem = Path(part).stem.lower()
+        if re.search(r'(^|[-_.])(auth|credentials?|secrets?|tokens?|passwords?|oauth|apikey|api_key|config|settings)([-_.]|$)', stem):
+            return 'potential credential or configuration'
+    if path.name.upper() in {'AGENTS.MD', 'CLAUDE.MD'}:
+        return 'agent instructions'
+    if not directory and path.suffix.lower() not in SOURCE_SUFFIXES:
+        return 'unsupported project file'
+    return None
+
+
+def source_files(root: Path, excluded=None) -> dict[str, bytes]:
+    """Copy bytes, never links. Optional exclusion report contains names, never content."""
     result = {}
     size = 0
+    if root.is_symlink() or not root.is_dir():
+        raise TaskError('项目目录无效或为符号链接。')
     for directory, dirs, names in os.walk(root, followlinks=False):
         current = Path(directory)
-        dirs[:] = [d for d in dirs if d not in EXCLUDED and not d.startswith('.')]
-        for d in dirs:
-            if (current / d).is_symlink():
-                raise TaskError('论文包含符号链接目录，请先将依赖放入论文目录。')
-        for name in names:
-            p = current / name
-            if name.startswith('.') or name in {'AGENTS.md', 'CLAUDE.md'} or p.suffix.lower() not in SOURCE_SUFFIXES:
+        included_dirs = []
+        for name in sorted(dirs):
+            path = current / name
+            relative = path.relative_to(root)
+            reason = exclusion_reason(relative, directory=True)
+            if reason:
+                if excluded is not None:
+                    excluded.append({'path': str(relative), 'reason': reason})
                 continue
-            if p.is_symlink() or not stat.S_ISREG(p.lstat().st_mode):
-                raise TaskError('论文依赖包含符号链接或特殊文件，无法建立独立候选。')
-            if p.stat().st_size > 50 * 1024 * 1024:
-                raise TaskError('单个论文依赖超过 50 MB，暂无法创建工作副本。')
-            data = p.read_bytes()
+            if path.is_symlink():
+                raise TaskError('论文包含符号链接目录，请先将依赖放入论文目录。')
+            included_dirs.append(name)
+        dirs[:] = included_dirs
+        for name in sorted(names):
+            p = current / name
+            relative = p.relative_to(root)
+            reason = exclusion_reason(relative)
+            if reason:
+                if excluded is not None:
+                    excluded.append({'path': str(relative), 'reason': reason})
+                continue
+            # Open without following a substituted symlink and validate the opened inode.
+            try:
+                fd = os.open(p, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            except OSError:
+                raise TaskError('论文依赖无法安全读取，请检查链接和文件权限。') from None
+            with os.fdopen(fd, 'rb') as stream:
+                info = os.fstat(stream.fileno())
+                if not stat.S_ISREG(info.st_mode):
+                    raise TaskError('论文依赖包含符号链接或特殊文件，无法建立独立候选。')
+                if info.st_size > 50 * 1024 * 1024:
+                    raise TaskError('单个论文依赖超过 50 MB，暂无法创建工作副本。')
+                data = stream.read(50 * 1024 * 1024 + 1)
+                if len(data) > 50 * 1024 * 1024:
+                    raise TaskError('单个论文依赖超过 50 MB，暂无法创建工作副本。')
             size += len(data)
             if size > 250 * 1024 * 1024:
                 raise TaskError('论文依赖超过 250 MB，请将当前论文单独放入文件夹。')
-            result[str(p.relative_to(root))] = data
+            result[str(relative)] = data
     return result
 
 
@@ -82,11 +129,11 @@ class StatusFingerprint:
         hashes, next_files = {}, {}
         for directory, dirs, names in os.walk(root, followlinks=False):
             current = Path(directory)
-            dirs[:] = [d for d in dirs if d not in EXCLUDED and not d.startswith('.')]
+            dirs[:] = [d for d in dirs if not exclusion_reason((current / d).relative_to(root), directory=True)]
             for name in names:
                 path = current / name
                 relative = str(path.relative_to(root))
-                if name.startswith('.') or path.suffix.lower() not in SOURCE_SUFFIXES or relative == excluded:
+                if exclusion_reason(Path(relative)) or relative == excluded:
                     continue
                 info = path.lstat()
                 if not stat.S_ISREG(info.st_mode):
@@ -128,12 +175,12 @@ def merged_files(base: dict[str, bytes], candidate: dict[str, bytes], current: d
         old, new = base.get(name), candidate.get(name)
         if old == new:
             continue
-        if Path(name).suffix.lower() not in EDIT_SUFFIXES:
-            raise TaskError('候选改动了图片等非文本依赖，请在外部检查后再处理。')
+        if exclusion_reason(Path(name)):
+            raise TaskError('候选包含不支持或受保护的项目文件。')
         now = current.get(name)
         if now == old:
             final = new
-        elif old is not None and new is not None and now is not None:
+        elif old is not None and new is not None and now is not None and is_text_asset(name, old, new, now):
             with tempfile.TemporaryDirectory(prefix='kimi-paper-merge-') as folder:
                 paths = [Path(folder) / n for n in ('current', 'base', 'candidate')]
                 for p, data in zip(paths, (now, old, new)):
@@ -143,7 +190,7 @@ def merged_files(base: dict[str, bytes], candidate: dict[str, bytes], current: d
                     raise TaskError(f'{name} 已有重叠修改，请重新生成候选。')
                 final = proc.stdout
         else:
-            raise TaskError(f'{name} 已有新增或删除冲突，请重新生成候选。')
+            raise TaskError(f'{name} 已有新增、删除或二进制修改冲突，请重新生成候选。')
         if final is None:
             result.pop(name, None)
         else:
@@ -154,14 +201,29 @@ def merged_files(base: dict[str, bytes], candidate: dict[str, bytes], current: d
     return result, changes
 
 
+def is_text_asset(name, *contents):
+    if Path(name).suffix.lower() not in EDIT_SUFFIXES:
+        return False
+    try:
+        for content in contents:
+            if b'\x00' in content:
+                return False
+            content.decode('utf-8')
+    except UnicodeDecodeError:
+        return False
+    return True
+
+
 def candidate_diff(base: dict[str, bytes], candidate: dict[str, bytes]):
     items = []
     for name in sorted(base.keys() | candidate.keys()):
         a, b = base.get(name, b''), candidate.get(name, b'')
         if a == b:
             continue
-        if Path(name).suffix.lower() not in EDIT_SUFFIXES:
-            items.append({'file': name, 'before': '[二进制文件]', 'after': '[二进制改动：不可自动采纳]', 'diff': ''})
+        if not is_text_asset(name, a, b):
+            describe = lambda data: f'[文件：{len(data)} bytes · SHA-256 {digest(data)}]'
+            items.append({'file': name, 'before': describe(a) if name in base else '[新增]',
+                          'after': describe(b) if name in candidate else '[删除]', 'diff': '', 'binary': True})
             continue
         old, new = a.decode('utf-8', errors='replace'), b.decode('utf-8', errors='replace')
         items.append({'file': name, 'before': old, 'after': new,

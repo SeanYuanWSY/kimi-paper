@@ -4,11 +4,12 @@ const path = require('node:path');
 const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../../Resources/paper_viewer.js'), 'utf8');
 
-function fixture() {
+function fixture(saved = {}) {
   const output = {textContent: ''}, calls = [];
   const popup = {hidden: true, style: {}}, popupOutput = {textContent: ''};
   let response;
   const context = vm.createContext({
+    sessionStorage: {getItem: key => saved[key] ?? null, setItem: (key,value) => {saved[key]=value;}},
     openCompose() {}, focusComment() {}, jumpToComment() {}, document: {addEventListener() {}}, state: {},
     $: id => id === '#kp-selection-translation' ? popup : id === '#kp-selection-output' ? popupOutput : output, clearTimeout, setTimeout, setInterval,
     window: {innerWidth: 640, innerHeight: 480, webkit: {messageHandlers: {paper: {postMessage(body) {
@@ -21,6 +22,8 @@ function fixture() {
 }
 
 (async () => {
+  const disabled = fixture({"kp.selection-enabled":"false"});
+  assert.equal(disabled.run("kpSelectionEnabled"), false, "PDF refresh must preserve the selection translation toggle");
   const f = fixture();
   await f.run("kpTranslate('automatic while disabled')");
   assert.equal(f.calls.length, 0);

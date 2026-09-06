@@ -10,7 +10,7 @@ enum AppFailure: LocalizedError {
 struct RuntimePaths {
     let resources = Bundle.main.resourceURL!
     var python: URL { resources.appendingPathComponent("python/bin/python3.12") }
-    var helper: URL { resources.appendingPathComponent("prepare_project.py") }
+    var helper: URL { resources.appendingPathComponent("prepare_workspace.py") }
     var supervisor: URL { resources.appendingPathComponent("supervise.py") }
     var paperService: URL { resources.appendingPathComponent("paper_service.py") }
     var kimi: URL { FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".kimi-code/bin/kimi") }

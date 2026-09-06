@@ -5,6 +5,11 @@ import UniformTypeIdentifiers
 @MainActor
 final class PaperWorkspace: ObservableObject {
     @Published var paper: URL?
+    @Published var projectRoot: URL?
+    @Published var previewID: String?
+    @Published var paperRevision = UUID()
+    @Published var projectFiles: [String] = []
+    private var currentSession: String?
     @Published var chatURL: URL?
     @Published var reviewURL: URL?
     @Published var tasksURL: URL?
@@ -34,11 +39,31 @@ final class PaperWorkspace: ObservableObject {
 
     func launch() {
         guard paper == nil, !connecting else { return }
+        let args = ProcessInfo.processInfo.arguments
+        if let index = args.firstIndex(of: "--project"), args.indices.contains(index + 1) {
+            let root = URL(fileURLWithPath: args[index + 1])
+            start(root.appendingPathComponent("main.tex"), root: root); return
+        }
         do {
             let last = UserDefaults.standard.string(forKey: "lastPaper")
             let target = last.map { URL(fileURLWithPath: $0) }
-            start(try target.flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil } ?? paths.example())
+            start(try target.flatMap { FileManager.default.fileExists(atPath: $0.deletingLastPathComponent().path) ? $0 : nil } ?? paths.example(), root: UserDefaults.standard.string(forKey: "lastProject").map { URL(fileURLWithPath: $0) })
         } catch { self.error = "无法创建示例论文，请检查文件夹权限。" }
+    }
+
+    func chooseProject() {
+        let panel = NSOpenPanel()
+        panel.title = "选择论文项目文件夹"; panel.canChooseDirectories = true; panel.canChooseFiles = false
+        panel.canCreateDirectories = true; panel.prompt = "打开项目"
+        panel.message = "整个项目包含正文、文献库、图片和表格。空文件夹可以直接起草。"
+        guard panel.runModal() == .OK, let root = panel.url else { return }
+        let main = root.appendingPathComponent("main.tex")
+        if FileManager.default.fileExists(atPath: main.path) { start(main, root: root); return }
+        let picker = NSOpenPanel(); picker.directoryURL = root
+        picker.title = "选择主文件；新项目可取消，稍后生成 main.tex"
+        picker.allowedContentTypes = [UTType(filenameExtension: "tex") ?? .plainText]
+        if picker.runModal() == .OK, let file = picker.url, file.path.hasPrefix(root.path + "/") { start(file, root: root) }
+        else { start(main, root: root) }
     }
 
     func choosePaper() {
@@ -48,14 +73,17 @@ final class PaperWorkspace: ObservableObject {
         panel.allowedContentTypes = [UTType(filenameExtension: "tex") ?? .plainText]
         panel.allowsMultipleSelection = false
         panel.message = "选择 main.tex 等主文件。Kimi 生成修改建议，由你确认采纳后才写入正文。"
-        if panel.runModal() == .OK, let url = panel.url { start(url) }
+        if panel.runModal() == .OK, let url = panel.url {
+            let root = projectRoot.flatMap { url.path.hasPrefix($0.path + "/") ? $0 : nil }
+            start(url, root: root)
+        }
     }
 
     func openExample() {
         do { start(try paths.example()) } catch { self.error = "无法打开示例论文。" }
     }
 
-    func reconnect() { if let paper { start(paper) } }
+    func reconnect() { if let paper { start(paper, root: projectRoot) } }
 
     func stop() {
         generation = UUID()
@@ -69,10 +97,10 @@ final class PaperWorkspace: ObservableObject {
         openComments = 0
     }
 
-    func start(_ file: URL) {
+    func start(_ file: URL, root: URL? = nil) {
         stop()
         let run = generation
-        paper = file; error = nil; connecting = true; status = "正在准备论文…"
+        paper = file; projectRoot = root ?? file.deletingLastPathComponent(); error = nil; connecting = true; status = "正在准备论文…"
         startTask = Task { [weak self] in
             guard let self else { return }
             do {
@@ -96,9 +124,11 @@ final class PaperWorkspace: ObservableObject {
             throw AppFailure.message("未找到 Kimi Code 或应用内的论文运行环境。请确认 Kimi 已安装。")
         }
         let python = paths.python, helper = paths.helper, env = paths.environment(localOnly: true)
+        let project = projectRoot ?? file.deletingLastPathComponent()
+        let mainRelative = String(file.path.dropFirst(project.path.count + 1))
         let prepared: [String: Any] = try await Task.detached {
             let p = Process(), pipe = Pipe()
-            p.executableURL = python; p.arguments = [helper.path, file.path]
+            p.executableURL = python; p.arguments = [helper.path, project.path, mainRelative]
             p.environment = env; p.standardOutput = pipe; p.standardError = FileHandle.nullDevice
             try p.run()
             let bytes = pipe.fileHandleForReading.readDataToEndOfFile()
@@ -117,7 +147,7 @@ final class PaperWorkspace: ObservableObject {
         var reviewAccess: URL?
         let review = try ManagedProcess(paths: paths, executable: paths.python,
             arguments: [paths.paperService.path], cwd: cwd, localOnly: true,
-            extraEnvironment: paths.agentProxyEnvironment)
+            extraEnvironment: paths.agentProxyEnvironment.merging(["KIMI_PAPER_STUDIO":"1"]) { _, new in new })
         reviewProcess = review
         review.onLine = { line in
             if line.hasPrefix("Kimi Paper service: ") {
@@ -139,11 +169,15 @@ final class PaperWorkspace: ObservableObject {
         }
         reviewURL = reviewAccess
         var taskAddress = URLComponents(url: reviewAccess, resolvingAgainstBaseURL: false)!
-        taskAddress.path = "/workbench"
+        taskAddress.path = "/studio-panel"
         tasksURL = taskAddress.url
         status = "正在连接 Kimi…"
-        connecting = false; status = "已就绪 · 在右侧划选文字并批注"
-        UserDefaults.standard.set(file.path, forKey: "lastPaper")
+        try await refreshStudio()
+        connecting = false; status = "同一会话写作 · 确认后更新正式稿"
+        if !ProcessInfo.processInfo.arguments.contains("--project") {
+            UserDefaults.standard.set(file.path, forKey: "lastPaper")
+            UserDefaults.standard.set(project.path, forKey: "lastProject")
+        }
         review.onExit = { [weak self] in self?.serviceEnded(run) }
         startMonitoring(run: run)
     }
@@ -157,24 +191,55 @@ final class PaperWorkspace: ObservableObject {
     private func startMonitoring(run: UUID) {
         monitorTask = Task { [weak self] in
             while !Task.isCancelled {
-                guard let self, self.generation == run, let reviewURL = self.reviewURL else { return }
+                guard let self, self.generation == run, self.reviewURL != nil else { return }
                 do {
-                    let (data, _) = try await self.http.data(from: reviewURL.appendingPathComponent("comments"))
-                    let body = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-                    let comments = body?["comments"] as? [[String: Any]] ?? []
-                    guard self.generation == run else { return }
-                    self.openComments = comments.filter { $0["status"] as? String == "open" }.count
-                    var parts = URLComponents(url: reviewURL, resolvingAgainstBaseURL: false)!
-                    let reviewToken = parts.fragment?.dropFirst(6)
-                    parts.fragment = nil; parts.path = "/kp/tasks"
-                    var request = URLRequest(url: parts.url!)
-                    request.setValue("Bearer " + String(reviewToken ?? ""), forHTTPHeaderField: "Authorization")
-                    let (tasks, _) = try await self.http.data(for: request)
-                    self.activeCandidates = (try JSONSerialization.jsonObject(with: tasks) as? [String: Any])?["running"] as? Int ?? 0
+                    try await self.refreshStudio()
                 } catch { /* A transient poll failure must not replace the live web interface. */ }
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
         }
+    }
+
+    func serviceRequest(_ path: String, body: [String: Any]? = nil) async throws -> [String: Any] {
+        guard let reviewURL else { throw CancellationError() }
+        var parts = URLComponents(url: reviewURL, resolvingAgainstBaseURL: false)!
+        let token = String(parts.fragment?.dropFirst(6) ?? "")
+        parts.fragment = nil; parts.path = path
+        var request = URLRequest(url: parts.url!); request.timeoutInterval = 240
+        request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
+        if let body { request.httpMethod = "POST"; request.httpBody = try JSONSerialization.data(withJSONObject: body); request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
+        let (data,response) = try await http.data(for: request)
+        let result = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw AppFailure.message(result["error"] as? String ?? "操作未完成。") }
+        return result
+    }
+
+    func refreshStudio() async throws {
+        let state = try await serviceRequest("/kp/studio/connection")
+        if let address = state["chatURL"] as? String, let nextURL = URL(string: address), chatURL != nextURL { chatURL = nextURL }
+        currentSession = state["session"] as? String
+        let next = state["preview"] as? String
+        if previewID != next { previewID = next }
+        busy = state["busy"] as? Bool ?? false
+        openComments = (state["pending"] as? [Any])?.count ?? 0
+        projectFiles = (state["files"] as? [[String: Any]] ?? []).compactMap { $0["path"] as? String }
+        if let issue = state["error"] as? String { error = issue }
+    }
+
+    func studioAction(_ action: String, body: [String: Any] = [:]) {
+        Task { do { _ = try await serviceRequest("/kp/studio/" + action, body: body); try await refreshStudio() }
+            catch { self.error = (error as? AppFailure)?.errorDescription ?? "操作未完成，请重试。" } }
+    }
+
+    func chatNavigated(_ url: URL) {
+        guard url.scheme == "http", url.host == "127.0.0.1", url.port == chatURL?.port else { return }
+        if url.path == "/" {
+            guard currentSession != "creating" else { return }
+            currentSession = "creating"; studioAction("new"); return
+        }
+        let pieces = url.pathComponents
+        guard pieces.count == 3, pieces[1] == "sessions", pieces[2] != currentSession else { return }
+        studioAction("select", body: ["session": pieces[2]])
     }
 
     func prepareAgents() async throws {
