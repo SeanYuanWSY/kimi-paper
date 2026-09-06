@@ -35,7 +35,8 @@ class PaperService(TexMcpWebServer):
         state = Path.home() / 'Library/Application Support/Kimi Paper/projects' / identity
         self.engine = Engine(self.watch_dir, str(self.main_file.relative_to(self.watch_dir)), state,
                              config.compiler, self.applied, self.prepare_effects, self.recover_effects)
-        self.studio = Studio(self) if os.environ.get("KIMI_PAPER_STUDIO") == "1" else None
+        studio_mode = os.environ.get("KIMI_PAPER_STUDIO")
+        self.studio = Studio(self, direct=studio_mode == "direct") if studio_mode in {"1", "direct"} else None
         self.catalog_task = None
         self.focused_task = None
         self.paper_git = PaperGit(self.watch_dir)
@@ -46,7 +47,9 @@ class PaperService(TexMcpWebServer):
         upstream.compile_tex = self.guarded_compile
 
     async def guarded_compile(self, main_file, compiler, work_dir):
-        files = await asyncio.to_thread(paper_files, self.watch_dir, self.engine.main)
+        direct = bool(getattr(self, 'studio', None) and self.studio.direct)
+        files = await asyncio.to_thread(paper_files, self.watch_dir, self.engine.main,
+                                        direct, None, direct)
         folder = self.engine.store.root / 'builds' / uuid.uuid4().hex
         materialize(folder, files)
         data = await compile_copy(folder, self.engine.main, compiler, self.watch_dir)
@@ -54,7 +57,8 @@ class PaperService(TexMcpWebServer):
         warnings = [CompileMessage(**e) for e in data['warnings']]
         output = None
         if data['success']:
-            if fingerprint(files) != fingerprint(paper_files(self.watch_dir, self.engine.main)):
+            if fingerprint(files) != fingerprint(paper_files(self.watch_dir, self.engine.main,
+                                                              direct, None, direct)):
                 return CompileResult(success=False, errors=[CompileMessage(self.engine.main, None, '正文在编译期间变化，请重新编译。', 'error')])
             for suffix in ('.pdf', '.synctex.gz'):
                 source = folder / Path(self.engine.main).with_suffix(suffix)
@@ -88,7 +92,10 @@ class PaperService(TexMcpWebServer):
                 if request.path == '/static/viewer.js':
                     source = (STATIC_DIR / 'viewer.js').read_text()
                     extra = '\n'+(RESOURCES/'paper_studio_viewer.js').read_text() if self.studio else ''
-                    return web.Response(text=('window.KP_STUDIO=true;\n' if self.studio else '')+source + '\n' + (RESOURCES / 'paper_viewer.js').read_text()+extra, content_type='text/javascript')
+                    flags = 'window.KP_STUDIO=true;\n' if self.studio else ''
+                    if self.studio and self.studio.direct:
+                        flags += 'window.KP_DIRECT=true;\n'
+                    return web.Response(text=flags+source + '\n' + (RESOURCES / 'paper_viewer.js').read_text()+extra, content_type='text/javascript')
                 return await handler(request)
             except TaskError as error:
                 return web.json_response({'error': str(error)}, status=409)
@@ -199,6 +206,8 @@ class PaperService(TexMcpWebServer):
         return web.json_response({'changes':candidate_diff(before,after)})
 
     async def git_preview(self, request):
+        if self.studio and self.studio.direct and await self.studio.busy():
+            raise TaskError('请先等待 Kimi 完成或停止，再执行 Git 操作。')
         body=await request.json()
         return web.json_response(await self.paper_git.prepare(body['action'],body))
 
@@ -206,17 +215,32 @@ class PaperService(TexMcpWebServer):
         body=await request.json()
         if self.git_active:raise TaskError('另一项 Git 操作正在进行，请等待完成。')
         self.git_active=True
+        restart_studio=False
         try:
+            action=self.paper_git.previews.get(body['token'],{}).get('action')
+            if self.studio and self.studio.direct and action in {'pull','switch','branch'}:
+                if await self.studio.busy():
+                    raise TaskError('请先等待 Kimi 完成或停止，再更新工作目录。')
+                await self.studio.close()
+                restart_studio=True
             async with self.engine.apply_lock:
+                if self.studio and self.studio.direct and not restart_studio and await self.studio.busy():
+                    raise TaskError('请先等待 Kimi 完成或停止，再执行 Git 操作。')
                 self.engine.require_recovered()
-                action=self.paper_git.previews.get(body['token'],{}).get('action')
                 message=await self.paper_git.execute(body['token'])
-                if action in {'pull','switch'}:
+                if action in {'pull','switch','branch'}:
+                    if self.studio and self.studio.direct:
+                        self.studio.accept_external_baseline()
                     result=await self.do_compile()
                     if not result.success:
                         message+=' Git 已更新，但论文编译未通过，请检查右侧错误；未自动回退 Git。'
-                    if self.studio:message+=' 正式项目已更新；持久草稿已保留，请在修改记录中使用从正式稿更新草稿。'
-        finally:self.git_active=False
+                    if self.studio and not self.studio.direct:
+                        message+=' 正式项目已更新；持久草稿已保留，请在修改记录中使用从正式稿更新草稿。'
+        finally:
+            if restart_studio:
+                try:await self.studio.start()
+                except Exception:self.studio.error='Git 操作后 Kimi 未能自动重连，请点击更多 → 重新连接。'
+            self.git_active=False
         return web.json_response({'message':message})
 
     async def batch(self, request):

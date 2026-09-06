@@ -9,19 +9,32 @@ struct ContentView: View {
             HStack(spacing: 16) {
                 Image(systemName: "book.closed.fill").foregroundStyle(.indigo)
                 Button { workspace.chooseProject() } label: {
-                    HStack { Text(workspace.projectRoot?.lastPathComponent ?? "选择项目").fontWeight(.semibold); Image(systemName: "chevron.down").font(.caption) }
+                    HStack {
+                        Image(systemName: "folder")
+                        Text(workspace.projectRoot?.lastPathComponent ?? "选择 Kimi 工作目录").fontWeight(.semibold)
+                        Image(systemName: "chevron.down").font(.caption)
+                    }
                 }.buttonStyle(.plain).disabled(workspace.connecting || workspace.busy)
-                Text(workspace.paper?.lastPathComponent ?? "").font(.caption).foregroundStyle(.secondary)
+                Text(workspace.projectRoot?.path ?? "")
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                    .help(workspace.projectRoot?.path ?? "")
                 Spacer()
-                if workspace.connecting || workspace.busy { ProgressView().controlSize(.small) }
-                Button("项目文件") { panel = "files" }
-                Button("修改记录") { panel = "changes" }
-                Button("版本与 GitHub") { panel = "git" }
+                if workspace.connecting || workspace.busy {
+                    ProgressView().controlSize(.small)
+                    Text(workspace.busy ? "Kimi 正在修改" : "正在连接").font(.caption).foregroundStyle(.secondary)
+                }
+                Button { panel = "git" } label: { Label("GitHub", systemImage: "arrow.triangle.branch") }
                 Menu {
-                    Button("选择 LaTeX 主文件") { workspace.choosePaper() }
+                    Button("更换 Kimi 工作目录…") { workspace.chooseProject() }
+                    Button("更换 LaTeX 主文件…") { workspace.choosePaper() }
+                    Divider()
+                    Button("撤销最近一次 Kimi 修改") { workspace.studioAction("undo") }
+                        .disabled(workspace.busy)
+                    Button("重新编译 PDF") { workspace.studioAction("freeze") }.disabled(workspace.busy)
                     Button("翻译设置") { panel = "settings" }
-                    Button("刷新页面") { workspace.webRevision = UUID(); workspace.paperRevision = UUID() }
+                    Button("刷新界面") { workspace.webRevision = UUID(); workspace.paperRevision = UUID() }
                     Button("重新连接") { workspace.reconnect() }.disabled(workspace.busy)
+                    Divider()
                     Button("打开示例项目") { workspace.openExample() }
                     Button("使用说明") { showHelp = true }
                 } label: { Image(systemName: "ellipsis.circle") }.menuStyle(.borderlessButton).fixedSize()
@@ -33,7 +46,11 @@ struct ContentView: View {
             }
             HSplitView {
                 VStack(spacing: 0) {
-                    HStack { Text("Kimi 工作台").fontWeight(.semibold); Spacer(); Text("持续会话 · 草稿写作").foregroundStyle(.secondary) }.font(.caption).padding(12)
+                    HStack {
+                        Text("Kimi").fontWeight(.semibold)
+                        Spacer()
+                        Text("直接修改当前项目").foregroundStyle(.secondary)
+                    }.font(.caption).padding(12)
                     Divider()
                     if let url = workspace.chatURL {
                         WebPane(url: url, revision: workspace.webRevision, onFailure: { workspace.error = $0 }, onLocation: workspace.chatNavigated).id(url.port)
@@ -41,13 +58,11 @@ struct ContentView: View {
                 }.frame(minWidth: 420, idealWidth: 600)
                 VStack(spacing: 0) {
                     HStack {
-                        Text(workspace.previewID == nil ? "正式论文" : "草稿预览").fontWeight(.semibold)
+                        Text("论文").fontWeight(.semibold)
                         Spacer()
-                        Button("正式稿") { workspace.studioAction("view", body: ["id": NSNull()]) }
-                        Button("生成预览") { workspace.studioAction("freeze") }.disabled(workspace.busy)
-                        if let id = workspace.previewID {
-                            Button("查看并采纳") { panel = "changes" }.tint(.indigo).help("版本 " + String(id.prefix(6)))
-                        }
+                        Text(workspace.paper?.lastPathComponent ?? "").foregroundStyle(.secondary)
+                        Button { workspace.studioAction("freeze") } label: { Image(systemName: "arrow.clockwise") }
+                            .buttonStyle(.borderless).help("重新编译 PDF").disabled(workspace.busy)
                     }.font(.caption).padding(10)
                     Divider()
                     if let url = workspace.reviewURL {
@@ -59,17 +74,20 @@ struct ContentView: View {
         .task { workspace.launch() }
         .sheet(isPresented: Binding(get: { panel != nil }, set: { if !$0 { panel = nil } })) {
             VStack(spacing: 0) {
-                HStack { Text("项目工作区").font(.headline); Spacer(); Button("完成") { panel = nil } }.padding(16)
+                HStack { Text(panel == "git" ? "GitHub" : "翻译设置").font(.headline); Spacer(); Button("完成") { panel = nil } }.padding(16)
                 if let base = workspace.tasksURL, var parts = URLComponents(url: base, resolvingAgainstBaseURL: false) {
-                    let _ = parts.queryItems = [URLQueryItem(name: "tab", value: panel)]
+                    let _ = parts.queryItems = [
+                        URLQueryItem(name: "tab", value: panel),
+                        URLQueryItem(name: "simple", value: panel == "git" ? "1" : "0")
+                    ]
                     WebPane(url: parts.url!, revision: workspace.webRevision, onFailure: { workspace.error = $0 }, translation: workspace.translation)
                 }
-            }.frame(width: 950, height: 710)
+            }.frame(width: panel == "git" ? 760 : 720, height: 680)
         }
         .sheet(isPresented: $showHelp) {
             VStack(alignment: .leading, spacing: 18) {
                 Text("从初稿写到定稿").font(.title2.bold())
-                Text("选择整个论文项目，在左侧 Kimi 中起草或讨论。Kimi 使用持久草稿目录，右侧生成 PDF 预览。\n\n划选文字即可翻译或写批注，批注发送到当前会话；也可以积攒后一起发送。模型和会话在 Kimi 原生界面选择。\n\n在修改记录中查看预览，再确认采纳到正式项目。正文、文献库、图表一同留存本地版本；GitHub 同步由你手动发起。")
+                Text("顶部选择的就是 Kimi 实际工作目录。请选择包含论文、数据、图表和相关脚本的真实项目目录。\n\n左侧用 Kimi 直接起草或做大修改；右侧划选一段写批注，会直接交给当前会话修改。Kimi 一轮结束后会自动重新编译 PDF。\n\nGitHub 按钮用于提交、拉取和推送。更多菜单中保留翻译设置和最近一次修改的撤销入口。")
                 Button("明白了") { showHelp = false }
             }.padding(28).frame(width: 540)
         }

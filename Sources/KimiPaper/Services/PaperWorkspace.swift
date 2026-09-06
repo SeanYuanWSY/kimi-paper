@@ -53,9 +53,9 @@ final class PaperWorkspace: ObservableObject {
 
     func chooseProject() {
         let panel = NSOpenPanel()
-        panel.title = "选择论文项目文件夹"; panel.canChooseDirectories = true; panel.canChooseFiles = false
+        panel.title = "选择 Kimi 的工作目录"; panel.canChooseDirectories = true; panel.canChooseFiles = false
         panel.canCreateDirectories = true; panel.prompt = "打开项目"
-        panel.message = "整个项目包含正文、文献库、图片和表格。空文件夹可以直接起草。"
+        panel.message = "Kimi 会直接在这个目录工作。请选择包含论文、数据、图表和脚本的原始项目目录。"
         guard panel.runModal() == .OK, let root = panel.url else { return }
         let main = root.appendingPathComponent("main.tex")
         if FileManager.default.fileExists(atPath: main.path) { start(main, root: root); return }
@@ -72,7 +72,7 @@ final class PaperWorkspace: ObservableObject {
         panel.prompt = "打开论文"
         panel.allowedContentTypes = [UTType(filenameExtension: "tex") ?? .plainText]
         panel.allowsMultipleSelection = false
-        panel.message = "选择 main.tex 等主文件。Kimi 生成修改建议，由你确认采纳后才写入正文。"
+        panel.message = "选择 main.tex 等主文件。如果主文件不在当前工作目录内，Kimi 会切换到它所在的项目。"
         if panel.runModal() == .OK, let url = panel.url {
             let root = projectRoot.flatMap { url.path.hasPrefix($0.path + "/") ? $0 : nil }
             start(url, root: root)
@@ -147,7 +147,7 @@ final class PaperWorkspace: ObservableObject {
         var reviewAccess: URL?
         let review = try ManagedProcess(paths: paths, executable: paths.python,
             arguments: [paths.paperService.path], cwd: cwd, localOnly: true,
-            extraEnvironment: paths.agentProxyEnvironment.merging(["KIMI_PAPER_STUDIO":"1"]) { _, new in new })
+            extraEnvironment: paths.agentProxyEnvironment.merging(["KIMI_PAPER_STUDIO":"direct"]) { _, new in new })
         reviewProcess = review
         review.onLine = { line in
             if line.hasPrefix("Kimi Paper service: ") {
@@ -171,9 +171,9 @@ final class PaperWorkspace: ObservableObject {
         var taskAddress = URLComponents(url: reviewAccess, resolvingAgainstBaseURL: false)!
         taskAddress.path = "/studio-panel"
         tasksURL = taskAddress.url
-        status = "正在连接 Kimi…"
+        status = "正在连接原项目中的 Kimi…"
         try await refreshStudio()
-        connecting = false; status = "同一会话写作 · 确认后更新正式稿"
+        connecting = false; status = "Kimi 正在原项目目录中工作"
         if !ProcessInfo.processInfo.arguments.contains("--project") {
             UserDefaults.standard.set(file.path, forKey: "lastPaper")
             UserDefaults.standard.set(project.path, forKey: "lastProject")

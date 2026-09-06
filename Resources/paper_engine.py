@@ -44,9 +44,14 @@ async def compile_copy(folder: Path, main: str, engine: str, forbidden: Path):
         await stop_group(proc)
 
 
-def paper_files(root, main):
-    files = source_files(root)
-    files.pop(str(Path(main).with_suffix('.pdf')), None)
+def paper_files(root, main, allow_oversize=False, excluded=None, allow_unsupported=False):
+    files = source_files(root, excluded, allow_oversize=allow_oversize,
+                         allow_unsupported=allow_unsupported)
+    entry = Path(main)
+    for suffix in ('.pdf', '.synctex.gz', '.aux', '.log', '.out', '.toc', '.bbl', '.blg',
+                   '.fls', '.fdb_latexmk', '.lof', '.lot', '.nav', '.snm', '.vrb', '.xdv',
+                   '.bcf', '.run.xml'):
+        files.pop(str(entry.with_suffix(suffix)), None)
     return files
 
 
@@ -443,7 +448,9 @@ class Engine:
         # exposes them as versions only after the entire apply transaction commits.
         journal['versions'] = await asyncio.to_thread(self.history.record, current, final, journal['id'])
         journal['created'] = time.time()
-        if fingerprint(current) != fingerprint(paper_files(self.manuscript, self.main)):
+        direct = bool(task.get('direct'))
+        if fingerprint(current) != fingerprint(paper_files(
+                self.manuscript, self.main, allow_oversize=direct, allow_unsupported=direct)):
             raise TaskError('保存版本期间正文发生变化，尚未写入，请重新比较。')
         if self.prepare_effects:
             journal['effects'] = self.prepare_effects(task, undo, journal['id'])
@@ -514,7 +521,9 @@ class Engine:
                 raise TaskError('该候选没有可撤销的采纳记录。')
             path = self.store.root / 'journals' / (task['journal'] + '.json')
             journal = json.loads(path.read_text())
-            current = paper_files(self.manuscript, self.main)
+            direct = bool(task.get('direct'))
+            current = paper_files(self.manuscript, self.main, allow_oversize=direct,
+                                  allow_unsupported=direct)
             base, candidate = dict(current), dict(current)
             for name, values in journal['files'].items():
                 for files, key in ((base, 'after'), (candidate, 'before')):
@@ -528,7 +537,9 @@ class Engine:
                 folder = self.run_dir(task_id) / ('undo-' + uuid.uuid4().hex)
                 materialize(folder, final)
                 result = await compile_copy(folder, self.main, self.compile_engine, self.manuscript)
-                if not result['success'] or fingerprint(current) != fingerprint(paper_files(self.manuscript, self.main)):
+                if (not result['success'] or fingerprint(current) != fingerprint(paper_files(
+                        self.manuscript, self.main, allow_oversize=direct,
+                        allow_unsupported=direct))):
                     raise TaskError('撤销结果无法安全编译，或正文已有变化；尚未写入。')
                 await self.commit(task_id, current, final, changes, undo=True)
             except BaseException:

@@ -66,6 +66,43 @@ class ProjectAssetsTests(unittest.TestCase):
             with self.assertRaises(TaskError):
                 source_files(root)
 
+    def test_direct_recovery_skips_large_data_without_blocking_project(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / 'main.tex').write_bytes(b'paper')
+            with (root / 'large.csv').open('wb') as stream:
+                stream.truncate(51 * 1024 * 1024)
+            excluded = []
+            files = source_files(root, excluded, allow_oversize=True)
+            self.assertEqual(files, {'main.tex': b'paper'})
+            self.assertEqual(excluded, [{'path': 'large.csv', 'reason': 'too large for automatic recovery'}])
+            with self.assertRaises(TaskError):
+                source_files(root)
+
+    def test_direct_recovery_skips_links_without_blocking_original_workspace(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / 'paper'; root.mkdir()
+            external = Path(folder) / 'external'; external.mkdir()
+            (root / 'main.tex').write_bytes(b'paper')
+            (external / 'plot.png').write_bytes(b'plot')
+            (root / 'linked-data').symlink_to(external, target_is_directory=True)
+            (root / 'plot.png').symlink_to(external / 'plot.png')
+            excluded = []
+            self.assertEqual(source_files(root, excluded, allow_oversize=True), {'main.tex': b'paper'})
+            self.assertEqual({item['path'] for item in excluded}, {'linked-data', 'plot.png'})
+
+    def test_direct_recovery_includes_ordinary_scripts_and_data_formats(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / 'main.tex').write_bytes(b'paper')
+            (root / 'analysis.sh').write_bytes(b'echo plot')
+            (root / 'measurements.parquet').write_bytes(b'fictional-data')
+            excluded = []
+            files = source_files(root, excluded, allow_oversize=True, allow_unsupported=True)
+            self.assertEqual(files['analysis.sh'], b'echo plot')
+            self.assertEqual(files['measurements.parquet'], b'fictional-data')
+            self.assertEqual(excluded, [])
+
 
 if __name__ == '__main__':
     unittest.main()

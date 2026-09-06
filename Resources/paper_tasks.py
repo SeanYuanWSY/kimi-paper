@@ -66,7 +66,39 @@ def exclusion_reason(path: Path, directory=False):
     return None
 
 
-def source_files(root: Path, excluded=None) -> dict[str, bytes]:
+def sensitive_project_paths(root: Path) -> list[Path]:
+    """Return credential/config paths by name without opening their contents."""
+    protected = []
+    for directory, dirs, names in os.walk(root, followlinks=False):
+        current = Path(directory)
+        kept = []
+        for name in sorted(dirs):
+            path = current / name
+            relative = path.relative_to(root)
+            reason = exclusion_reason(relative, directory=True)
+            if name.lower() == '.git':
+                continue
+            if (reason in {'configuration or runtime directory', 'potential credential or configuration'}
+                    or name.lower() in {'.kimi-code', '.codex', '.agents', '.ssh', '.aws', '.gnupg'}):
+                protected.append(path)
+            else:
+                kept.append(name)
+        dirs[:] = kept
+        for name in sorted(names):
+            path = current / name
+            relative = path.relative_to(root)
+            reason = exclusion_reason(relative)
+            lower = name.lower()
+            if (reason in {'configuration or runtime directory', 'potential credential or configuration'}
+                    or lower == '.env' or lower.startswith('.env.')
+                    or lower in {'id_rsa', 'id_ed25519'}
+                    or Path(lower).suffix in {'.key', '.pem', '.p12', '.pfx'}):
+                protected.append(path)
+    return protected
+
+
+def source_files(root: Path, excluded=None, allow_oversize=False,
+                 allow_unsupported=False) -> dict[str, bytes]:
     """Copy bytes, never links. Optional exclusion report contains names, never content."""
     result = {}
     size = 0
@@ -84,6 +116,10 @@ def source_files(root: Path, excluded=None) -> dict[str, bytes]:
                     excluded.append({'path': str(relative), 'reason': reason})
                 continue
             if path.is_symlink():
+                if allow_oversize:
+                    if excluded is not None:
+                        excluded.append({'path': str(relative), 'reason': 'symbolic link not included in automatic recovery'})
+                    continue
                 raise TaskError('论文包含符号链接目录，请先将依赖放入论文目录。')
             included_dirs.append(name)
         dirs[:] = included_dirs
@@ -91,6 +127,8 @@ def source_files(root: Path, excluded=None) -> dict[str, bytes]:
             p = current / name
             relative = p.relative_to(root)
             reason = exclusion_reason(relative)
+            if allow_unsupported and reason == 'unsupported project file':
+                reason = None
             if reason:
                 if excluded is not None:
                     excluded.append({'path': str(relative), 'reason': reason})
@@ -99,15 +137,31 @@ def source_files(root: Path, excluded=None) -> dict[str, bytes]:
             try:
                 fd = os.open(p, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
             except OSError:
+                if allow_oversize and p.is_symlink():
+                    if excluded is not None:
+                        excluded.append({'path': str(relative), 'reason': 'symbolic link not included in automatic recovery'})
+                    continue
                 raise TaskError('论文依赖无法安全读取，请检查链接和文件权限。') from None
             with os.fdopen(fd, 'rb') as stream:
                 info = os.fstat(stream.fileno())
                 if not stat.S_ISREG(info.st_mode):
                     raise TaskError('论文依赖包含符号链接或特殊文件，无法建立独立候选。')
                 if info.st_size > 50 * 1024 * 1024:
+                    if allow_oversize:
+                        if excluded is not None:
+                            excluded.append({'path': str(relative), 'reason': 'too large for automatic recovery'})
+                        continue
                     raise TaskError('单个论文依赖超过 50 MB，暂无法创建工作副本。')
+                if allow_oversize and size + info.st_size > 250 * 1024 * 1024:
+                    if excluded is not None:
+                        excluded.append({'path': str(relative), 'reason': 'automatic recovery size limit'})
+                    continue
                 data = stream.read(50 * 1024 * 1024 + 1)
                 if len(data) > 50 * 1024 * 1024:
+                    if allow_oversize:
+                        if excluded is not None:
+                            excluded.append({'path': str(relative), 'reason': 'too large for automatic recovery'})
+                        continue
                     raise TaskError('单个论文依赖超过 50 MB，暂无法创建工作副本。')
             size += len(data)
             if size > 250 * 1024 * 1024:
@@ -276,7 +330,8 @@ class Store:
 
 def sandbox_profile(work: Path, manuscript: Path, writable: list[Path], protected: list[Path] = (),
                     unreadable: list[Path] = (), read_scope: tuple[Path, Path] | None = None,
-                    gateway: tuple[str, int] | None = None) -> str:
+                    gateway: tuple[str, int] | None = None,
+                    deny_manuscript_read: bool = True) -> str:
     # Seatbelt strings do not interpret JSON's \uXXXX escapes.
     quote = lambda p: json.dumps(str(p.resolve()), ensure_ascii=False)
     # Default-deny also blocks Apple Events, task ports and Unix-domain delegation.
@@ -295,7 +350,8 @@ def sandbox_profile(work: Path, manuscript: Path, writable: list[Path], protecte
         lines += ['(allow network-outbound (remote tcp))', '(deny network-outbound (remote ip "localhost:*"))']
     for p in writable:
         lines.append(f'(allow file-write* (subpath {quote(p)}))')
-    lines.append(f'(deny file-read* (subpath {quote(manuscript)}))')
+    if deny_manuscript_read:
+        lines.append(f'(deny file-read* (subpath {quote(manuscript)}))')
     for p in protected:
         for path in {str(p.absolute()), str(p.resolve())}:
             lines.append(f'(deny file-write* (subpath {json.dumps(path, ensure_ascii=False)}))')
@@ -304,6 +360,29 @@ def sandbox_profile(work: Path, manuscript: Path, writable: list[Path], protecte
     if read_scope:
         root, own = read_scope
         lines.append(f'(deny file-read-data (require-all (subpath {quote(root)}) (require-not (subpath {quote(own)}))))')
+    return '\n'.join(lines)
+
+
+def direct_project_write_denials(root: Path) -> str:
+    """Deny sensitive names even when an agent tries to create them after startup."""
+    prefix = re.escape(str(root.resolve()))
+    names = ('[Aa][Uu][Tt][Hh]', '[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll]',
+             '[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll][Ss]',
+             '[Ss][Ee][Cc][Rr][Ee][Tt]', '[Ss][Ee][Cc][Rr][Ee][Tt][Ss]',
+             '[Tt][Oo][Kk][Ee][Nn]', '[Tt][Oo][Kk][Ee][Nn][Ss]',
+             '[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]', '[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd][Ss]',
+             '[Oo][Aa][Uu][Tt][Hh]',
+             '[Aa][Pp][Ii][Kk][Ee][Yy]', '[Aa][Pp][Ii]_[Kk][Ee][Yy]')
+    lines = [f'(deny file-write* (regex #"{prefix}/(?:[^/]+/)*\\.[^/]+(?:/.*)?$"))',
+             f'(deny file-write* (regex #"{prefix}/(?:[^/]+/)*(?:[Aa][Gg][Ee][Nn][Tt][Ss]\\.[Mm][Dd]|[Cc][Ll][Aa][Uu][Dd][Ee]\\.[Mm][Dd])$"))']
+    for name in names:
+        for parent in (f'{prefix}/', f'{prefix}/.*/'):
+            lines.extend((f'(deny file-write* (regex #"{parent}{name}$"))',
+                          f'(deny file-write* (regex #"{parent}{name}[-_.].*"))',
+                          f'(deny file-write* (regex #"{parent}{name}/.*"))',
+                          f'(deny file-write* (regex #"{parent}.*[-_.]{name}$"))',
+                          f'(deny file-write* (regex #"{parent}.*[-_.]{name}[-_.].*"))',
+                          f'(deny file-write* (regex #"{parent}.*[-_.]{name}/.*"))'))
     return '\n'.join(lines)
 
 

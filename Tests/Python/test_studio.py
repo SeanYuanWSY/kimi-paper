@@ -221,5 +221,181 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
         self.studio.proc = None
 
 
+class DirectStudioTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name).resolve()
+        self.paper = self.root / 'paper'
+        self.paper.mkdir()
+        (self.paper / 'main.tex').write_bytes(b'original\n')
+        self.engine = Engine(self.paper, 'main.tex', self.root / 'state')
+        self.service = SimpleNamespace(
+            engine=self.engine, broadcast=AsyncMock(), do_compile=AsyncMock(), pdf_digest='pdf-1')
+        self.studio = Studio(self.service, direct=True)
+
+    async def asyncTearDown(self):
+        await self.studio.close()
+        await self.engine.close()
+        self.temp.cleanup()
+
+    async def test_direct_workspace_is_original_project_and_has_separate_manifest(self):
+        self.assertEqual(self.studio.work, self.paper)
+        self.assertEqual(self.studio.manifest_path.name, 'direct-manifest.json')
+        self.assertFalse((self.studio.root / 'manifest.json').exists())
+        self.studio.request = AsyncMock(return_value={'metadata': {'cwd': str(self.paper)}})
+        await self.studio.select('direct-session')
+        self.assertEqual(self.studio.manifest['session'], 'direct-session')
+        self.studio.request.return_value = {'metadata': {'cwd': str(self.studio.run / 'work')}}
+        with self.assertRaises(TaskError):
+            await self.studio.select('old-draft-session')
+
+    async def test_direct_compile_records_recoverable_change_and_undo_restores_source(self):
+        self.studio.busy = AsyncMock(return_value=False)
+        self.service.do_compile.return_value = SimpleNamespace(success=True)
+        (self.paper / 'main.tex').write_bytes(b'direct change\n')
+        await self.studio.freeze()
+        task_id = self.studio.manifest['last_direct']
+        task = self.engine.store.get(task_id)
+        self.assertTrue(task['direct'])
+        self.assertEqual(task['status'], 'applied')
+        self.assertEqual((self.studio.base / 'main.tex').read_bytes(), b'direct change\n')
+        with patch('paper_engine.compile_copy', AsyncMock(return_value={'success': True})):
+            await self.studio.undo_direct()
+        self.assertEqual((self.paper / 'main.tex').read_bytes(), b'original\n')
+        self.assertIsNone(self.studio.manifest['last_direct'])
+        self.assertEqual(self.engine.store.get(task_id)['status'], 'undone')
+
+    async def test_direct_annotation_explicitly_requests_saved_project_edit(self):
+        self.studio.manifest['session'] = 'direct-session'
+        selected = {'metadata': {'cwd': str(self.paper)},
+                    'agent_config': {'model': 'kimi-for-coding/k3-256k', 'thinking': 'high'}}
+        self.studio.select = AsyncMock(return_value=selected)
+        self.studio.request = AsyncMock(return_value={})
+        await self.studio.send('', [{'quote': 'Original sentence.', 'text': 'Make it precise.'}])
+        payload = self.studio.request.await_args.args[1]
+        prompt = payload['content'][0]['text']
+        self.assertIn('直接在当前项目目录中', prompt)
+        self.assertIn('Original sentence.', prompt)
+        self.assertIn('Make it precise.', prompt)
+
+    async def test_direct_compile_rejects_files_changed_after_success(self):
+        self.studio.busy = AsyncMock(return_value=False)
+        async def racing_compile():
+            (self.paper / 'main.tex').write_bytes(b'changed during compile\n')
+            return SimpleNamespace(success=True)
+        self.service.do_compile.side_effect = racing_compile
+        with self.assertRaises(TaskError):
+            await self.studio.freeze()
+        self.assertEqual(self.engine.store.all(), [])
+        self.assertIsNone(self.studio.manifest.get('last_direct'))
+
+    async def test_direct_compile_ignores_its_own_synctex_output(self):
+        self.studio.busy = AsyncMock(return_value=False)
+        async def compiling():
+            (self.paper / 'main.synctex.gz').write_bytes(b'generated navigation')
+            return SimpleNamespace(success=True)
+        self.service.do_compile.side_effect = compiling
+        (self.paper / 'main.tex').write_bytes(b'direct change\n')
+        await self.studio.freeze()
+        self.assertIsNotNone(self.studio.manifest.get('last_direct'))
+        self.assertNotIn('main.synctex.gz', self.studio.project_files())
+
+    async def test_direct_snapshot_failure_has_task_before_any_journal(self):
+        self.studio.busy = AsyncMock(return_value=False)
+        self.service.do_compile.return_value = SimpleNamespace(success=True)
+        (self.paper / 'main.tex').write_bytes(b'direct change\n')
+        with patch.object(self.engine.history, 'record', side_effect=TaskError('fictional snapshot failure')):
+            with self.assertRaises(TaskError):
+                await self.studio.freeze()
+        tasks = self.engine.store.all()
+        self.assertEqual(len(tasks), 1)
+        self.assertEqual(tasks[0]['status'], 'needs_review')
+        self.assertEqual(self.engine.transactions(), [])
+
+    async def test_restart_reconciles_committed_journal_before_base_swap(self):
+        self.studio.busy = AsyncMock(return_value=False)
+        self.service.do_compile.return_value = SimpleNamespace(success=True)
+        (self.paper / 'main.tex').write_bytes(b'direct change\n')
+        original_exchange = self.studio.exchange
+        with patch.object(self.studio, 'exchange', side_effect=RuntimeError('crash after journal')):
+            with self.assertRaises(RuntimeError):
+                await self.studio.freeze()
+        task = self.engine.store.all()[0]
+        self.assertEqual(task['status'], 'applied')
+        self.assertEqual((self.studio.base / 'main.tex').read_bytes(), b'original\n')
+        self.studio.exchange = original_exchange
+
+        recovered = Studio(self.service, direct=True)
+        self.assertEqual(recovered.manifest['last_direct'], task['id'])
+        self.assertEqual((recovered.base / 'main.tex').read_bytes(), b'direct change\n')
+        await recovered.close()
+
+    async def test_restart_recovers_latest_of_two_nonoverlapping_direct_changes(self):
+        self.studio.busy = AsyncMock(return_value=False)
+        self.service.do_compile.return_value = SimpleNamespace(success=True)
+        (self.paper / 'main.tex').write_bytes(b'first direct change\n')
+        await self.studio.freeze()
+        first = self.studio.manifest['last_direct']
+        (self.paper / 'refs.bib').write_bytes(b'@article{new}\n')
+        original_exchange = self.studio.exchange
+        with patch.object(self.studio, 'exchange', side_effect=RuntimeError('crash before manifest')):
+            with self.assertRaises(RuntimeError):
+                await self.studio.freeze()
+        latest = max(self.engine.store.all(), key=lambda task: task['created'])
+        self.assertNotEqual(first, latest['id'])
+        self.studio.exchange = original_exchange
+
+        recovered = Studio(self.service, direct=True)
+        self.assertEqual(recovered.manifest['last_direct'], latest['id'])
+        self.assertEqual((recovered.base / 'refs.bib').read_bytes(), b'@article{new}\n')
+        await recovered.close()
+
+    async def test_restart_recovers_last_direct_after_base_swap_before_manifest(self):
+        self.studio.busy = AsyncMock(return_value=False)
+        self.service.do_compile.return_value = SimpleNamespace(success=True)
+        (self.paper / 'main.tex').write_bytes(b'direct change\n')
+        original_persist = self.studio.persist
+        with patch.object(self.studio, 'persist', side_effect=RuntimeError('crash after base swap')):
+            with self.assertRaises(RuntimeError):
+                await self.studio.freeze()
+        latest = self.engine.store.all()[0]
+        self.assertEqual((self.studio.base / 'main.tex').read_bytes(), b'direct change\n')
+        self.studio.persist = original_persist
+
+        recovered = Studio(self.service, direct=True)
+        self.assertEqual(recovered.manifest['last_direct'], latest['id'])
+        await recovered.close()
+
+    async def test_git_barrier_is_durable_before_base_replacement(self):
+        self.studio.busy = AsyncMock(return_value=False)
+        self.service.do_compile.return_value = SimpleNamespace(success=True)
+        (self.paper / 'main.tex').write_bytes(b'direct change\n')
+        await self.studio.freeze()
+        (self.paper / 'refs.bib').write_bytes(b'collaborator update\n')
+        original_replace = self.studio.replace_base
+        with patch.object(self.studio, 'replace_base', side_effect=RuntimeError('crash after git')):
+            with self.assertRaises(RuntimeError):
+                self.studio.accept_external_baseline()
+        self.studio.replace_base = original_replace
+
+        recovered = Studio(self.service, direct=True)
+        self.assertIsNone(recovered.manifest.get('last_direct'))
+        self.assertEqual((recovered.base / 'refs.bib').read_bytes(), b'collaborator update\n')
+        await recovered.close()
+
+    async def test_external_edit_on_restart_becomes_new_baseline_without_old_undo(self):
+        self.studio.busy = AsyncMock(return_value=False)
+        self.service.do_compile.return_value = SimpleNamespace(success=True)
+        (self.paper / 'main.tex').write_bytes(b'direct change\n')
+        await self.studio.freeze()
+        self.assertIsNotNone(self.studio.manifest.get('last_direct'))
+        (self.paper / 'main.tex').write_bytes(b'collaborator update\n')
+
+        recovered = Studio(self.service, direct=True)
+        self.assertIsNone(recovered.manifest.get('last_direct'))
+        self.assertEqual((recovered.base / 'main.tex').read_bytes(), b'collaborator update\n')
+        await recovered.close()
+
+
 if __name__ == '__main__':
     unittest.main()

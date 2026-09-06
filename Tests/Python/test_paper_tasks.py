@@ -8,7 +8,8 @@ import tempfile
 import unittest
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'Resources'))
-from paper_tasks import Store, TaskError, source_files, materialize, merged_files, sandbox_profile
+from paper_tasks import (Store, TaskError, source_files, materialize, merged_files,
+                         sandbox_profile, sensitive_project_paths, direct_project_write_denials)
 
 
 class CandidateTests(unittest.TestCase):
@@ -64,6 +65,63 @@ for op in [lambda:pathlib.Path(secret).read_text(),lambda:pathlib.Path(secret).w
                 p = subprocess.run(['/usr/bin/sandbox-exec','-f',str(profile),sys.executable,'-c',code,str(work),str(secret),str(port)],capture_output=True,text=True)
                 self.assertEqual(p.returncode, 0, p.stderr)
                 self.assertEqual(secret.read_text(), 'original')
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'macOS sandbox')
+    def test_direct_boundary_allows_project_work_but_blocks_secrets_and_git_writes(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d).resolve(); project = root / 'paper'; project.mkdir()
+            main = project / 'main.tex'; main.write_text('original')
+            data = project / 'data.csv'; data.write_text('1,2')
+            secret = project / 'credentials.json'; secret.write_text('fictional-secret')
+            env = project / '.env'; env.write_text('TOKEN=fictional')
+            git = project / '.git'; git.mkdir(); git_config = git / 'config'; git_config.write_text('original')
+            large = project / 'large.bin'
+            with large.open('wb') as stream: stream.truncate(51 * 1024 * 1024)
+            external = root / 'external.txt'; external.write_text('outside')
+            linked = project / 'linked.txt'; linked.symlink_to(external)
+            outputs = project / 'outputs'; outputs.mkdir()
+            authors = project / 'authors.tex'; authors.write_text('Original Authors')
+            new_env = project / '.env.new'
+            new_auth = project / 'auth.json'
+            new_credentials = outputs / 'credentials.json'
+            new_prefixed_secret = outputs / 'client-secret.json'
+            excluded = []
+            files = source_files(project, excluded, allow_oversize=True, allow_unsupported=True)
+            self.assertIn('data.csv', files)
+            sensitive = sensitive_project_paths(project)
+            nonrecoverable = [project / item['path'] for item in excluded]
+            profile = sandbox_profile(project, project, [project],
+                                      [project / '.git', *sensitive, *nonrecoverable], unreadable=sensitive,
+                                      deny_manuscript_read=False)
+            profile += '\n' + direct_project_write_denials(project)
+            code = '''from pathlib import Path
+import sys
+main,data,authors,secret,env,git_config,large,linked,new_env,new_auth,new_credentials,new_prefixed_secret=sys.argv[1:]
+assert Path(data).read_text()=='1,2'
+Path(main).write_text('changed')
+Path(authors).write_text('Updated Authors')
+for label,action in [('secret-read',lambda:Path(secret).read_text()),('secret-write',lambda:Path(secret).write_text('bad')),('env-read',lambda:Path(env).read_text()),('env-write',lambda:Path(env).write_text('bad')),('git',lambda:Path(git_config).write_text('bad')),('large',lambda:Path(large).write_text('bad')),('link',lambda:Path(linked).unlink()),('new-env',lambda:Path(new_env).write_text('bad')),('new-auth',lambda:Path(new_auth).write_text('bad')),('new-credentials',lambda:Path(new_credentials).write_text('bad')),('new-prefixed-secret',lambda:Path(new_prefixed_secret).write_text('bad'))]:
+ try:action()
+ except OSError:pass
+ else:raise SystemExit('direct boundary failed: '+label)
+'''
+            p = subprocess.run(['/usr/bin/sandbox-exec', '-p', profile, sys.executable, '-c', code,
+                                str(main), str(data), str(authors), str(secret), str(env), str(git_config),
+                                str(large), str(linked), str(new_env), str(new_auth), str(new_credentials),
+                                str(new_prefixed_secret)],
+                               capture_output=True, text=True)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            self.assertEqual(main.read_text(), 'changed')
+            self.assertEqual(authors.read_text(), 'Updated Authors')
+            self.assertEqual(secret.read_text(), 'fictional-secret')
+            self.assertEqual(env.read_text(), 'TOKEN=fictional')
+            self.assertEqual(git_config.read_text(), 'original')
+            self.assertEqual(large.stat().st_size, 51 * 1024 * 1024)
+            self.assertTrue(linked.is_symlink())
+            self.assertFalse(new_env.exists())
+            self.assertFalse(new_auth.exists())
+            self.assertFalse(new_credentials.exists())
+            self.assertFalse(new_prefixed_secret.exists())
 
 
 if __name__ == '__main__': unittest.main()
