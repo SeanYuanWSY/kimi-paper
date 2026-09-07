@@ -8,9 +8,10 @@ function fixture(saved = {}) {
   const output = {textContent: ''}, calls = [];
   const popup = {hidden: true, style: {}}, popupOutput = {textContent: ''};
   let response;
+  const listeners = {};
   const context = vm.createContext({
     sessionStorage: {getItem: key => saved[key] ?? null, setItem: (key,value) => {saved[key]=value;}},
-    openCompose() {}, focusComment() {}, jumpToComment() {}, document: {addEventListener() {}}, state: {},
+    openCompose() {}, focusComment() {}, jumpToComment() {}, document: {addEventListener(name,fn) {listeners[name]=fn;}}, state: {},
     $: id => id === '#kp-selection-translation' ? popup : id === '#kp-selection-output' ? popupOutput : output, clearTimeout, setTimeout, setInterval,
     window: {innerWidth: 640, innerHeight: 480, webkit: {messageHandlers: {paper: {postMessage(body) {
       return new Promise(resolve => calls.push({body, resolve}));
@@ -18,7 +19,7 @@ function fixture(saved = {}) {
     fetch: async () => ({ok: true, json: () => new Promise(resolve => {response = resolve;})}),
   });
   vm.runInContext(source, context);
-  return {context, output, popup, popupOutput, calls, resolveHTTP: value => response(value), run: code => vm.runInContext(code, context)};
+  return {context, output, popup, popupOutput, calls, listeners, resolveHTTP: value => response(value), run: code => vm.runInContext(code, context)};
 }
 
 (async () => {
@@ -90,5 +91,20 @@ function fixture(saved = {}) {
   assert.equal(scrolling.popupOutput.textContent,'persistent translation','A request may finish while scrolling');
   scrolling.run('readerEvents.scroll?.();');
   assert.equal(scrolling.popup.hidden,false);
+  const release = fixture();
+  const clickStart = source.indexOf('  document.addEventListener("click",');
+  const clickEnd = source.indexOf('  document.addEventListener("keydown",',clickStart);
+  release.run('const popup = $("#kp-selection-translation");'+source.slice(clickStart,clickEnd));
+  release.run(`state.pdfDigest='pdf';state.selection={getSelectedText:()=>({toPromise:async()=>['new selection']})};kpPopupTimer=setTimeout(kpShowSelection,180);`);
+  release.listeners.click({composedPath:()=>[]});
+  await new Promise(resolve=>setTimeout(resolve,220));
+  assert.equal(release.calls.length,1,'Selection-release click must not cancel the pending translation');
+  release.calls[0].resolve({text:'translated after release'});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(release.popup.hidden,false);
+  release.listeners.click({composedPath:()=>[release.popup]});
+  assert.equal(release.popup.hidden,false,'Inside click preserves the translation');
+  release.listeners.click({composedPath:()=>[]});
+  assert.equal(release.popup.hidden,true,'Later outside click dismisses the visible translation');
   console.log('PASS: translation stays on the newest selection; obsolete viewport responses are ignored (mock bridge)');
 })().catch(error => {console.error(error); process.exitCode = 1;});
