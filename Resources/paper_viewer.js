@@ -200,18 +200,15 @@ function kpBindSelection() {
   if (!kpSelectionScope) return;
   const root = state.viewer.shadowRoot;
   const pointer = event => {kpPopupPoint = {x: event.clientX, y: event.clientY};};
-  const scroll = () => kpClosePopup();
   root.addEventListener("pointerup", pointer, true);
-  root.addEventListener("scroll", scroll, true);
-  kpSelectionUnsubscribe.push(() => {root.removeEventListener("pointerup", pointer, true); root.removeEventListener("scroll", scroll, true);});
+  kpSelectionUnsubscribe.push(() => root.removeEventListener("pointerup", pointer, true));
   kpSelectionUnsubscribe.push(kpSelectionScope.onBeginSelection(kpClosePopup));
   kpSelectionUnsubscribe.push(kpSelectionScope.onEndSelection(() => {
     clearTimeout(kpPopupTimer);
     kpPopupTimer = setTimeout(kpShowSelection, 180);
   }));
-  kpSelectionUnsubscribe.push(kpSelectionScope.onSelectionChange(() => {
-    if (!kpSelectionScope.getFormattedSelection().length) kpClosePopup();
-  }));
+  // PDF virtualization can clear its selection while scrolling. Keep the
+  // captured translation visible until the reader deliberately dismisses it.
 }
 
 async function kpTranslate(text, manual = false) {
@@ -269,11 +266,13 @@ document.addEventListener("DOMContentLoaded", async () => {
   // Keep the hidden attribute authoritative despite the popup's flex layout.
   document.head.append(h("style", {text: "#kp-selection-translation[hidden]{display:none!important}"}));
   document.body.append(popup);
-  document.addEventListener("pointerdown", event => {
+  document.addEventListener("click", event => {
     if (!event.composedPath().includes(popup)) kpClosePopup();
   }, true);
   document.addEventListener("keydown", event => {if (event.key === "Escape") kpClosePopup();});
-  window.addEventListener("resize", kpClosePopup);
+  window.addEventListener("resize", () => {
+    if (!popup.hidden) kpPositionPopup();
+  });
   const settings = h("fieldset", {}, h("legend", {text: "Kimi 修改建议"}),
     h("label", {}, h("input", {type: "checkbox", id: "kp-deferred"}), " 先保存批注，之后统一顺序处理"), h("div", {id: "kp-model-rows"}),
     h("button", {type: "button", text: "＋ 添加一个候选", onclick: () => {if (kpRows.length < 6) kpRow();}}),

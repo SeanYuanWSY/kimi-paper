@@ -65,5 +65,30 @@ function fixture(saved = {}) {
   p.calls[1].resolve({text:'closed result'}); await firstPopup;
   assert.equal(p.popup.hidden, true, 'Closed popup must not reopen when a request finishes');
   assert.notEqual(p.popupOutput.textContent, 'closed result');
+  const scrolling = fixture();
+  scrolling.run(`
+    globalThis.readerEvents = {};
+    state.pdfDigest = 'stable-pdf';
+    state.viewer = {shadowRoot: {
+      addEventListener: (name, fn) => {readerEvents[name] = fn;},
+      removeEventListener: name => {delete readerEvents[name];}
+    }};
+    state.selection = {
+      getSelectedText: () => ({toPromise: async () => ['keep while scrolling']}),
+      getFormattedSelection: () => [],
+      onBeginSelection: fn => {readerEvents.begin = fn; return () => {};},
+      onEndSelection: fn => {readerEvents.end = fn; return () => {};},
+      onSelectionChange: fn => {readerEvents.change = fn; return () => {};}
+    };
+    kpBindSelection();
+  `);
+  const reading = scrolling.run('kpShowSelection()');
+  await new Promise(resolve => setImmediate(resolve));
+  scrolling.run('readerEvents.scroll?.(); readerEvents.change?.();');
+  assert.equal(scrolling.popup.hidden, false, 'Scrolling or virtualized selection clearing must keep the popup open');
+  scrolling.calls[0].resolve({text:'persistent translation'}); await reading;
+  assert.equal(scrolling.popupOutput.textContent,'persistent translation','A request may finish while scrolling');
+  scrolling.run('readerEvents.scroll?.();');
+  assert.equal(scrolling.popup.hidden,false);
   console.log('PASS: translation stays on the newest selection; obsolete viewport responses are ignored (mock bridge)');
 })().catch(error => {console.error(error); process.exitCode = 1;});
