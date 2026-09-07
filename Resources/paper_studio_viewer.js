@@ -50,6 +50,21 @@ submitCompose = async function(event) {
   finally{applyComposeSubmitting(false);$('#compose-submit').textContent='发送修改要求';}
 };
 document.addEventListener('DOMContentLoaded',()=>{
+  // Keep navigation available without taking width away from the paper.
+  document.head.append(h('style',{text:'.layout{position:relative;grid-template-columns:minmax(0,1fr)!important}#sidebar{position:absolute;right:0;top:0;bottom:0;width:min(320px,85%);z-index:30;box-shadow:-6px 0 24px #0002}.sidebar-tabs{font-size:12px}#kp-reading-status{flex-wrap:wrap}#sidebar-toggle-btn{margin-left:auto;white-space:nowrap;padding:5px 10px;border:1px solid #ddd;border-radius:6px;background:#fff;color:#444}'}));
+  const sidebarToggle=$('#sidebar-toggle-btn');
+  sidebarToggle.textContent='目录 / 批注';
+  sidebarToggle.title='展开或收起目录、批注与编译信息';
+  sidebarToggle.setAttribute('aria-controls','sidebar');
+  $('#kp-reading-status').append(sidebarToggle);
+  const updateSidebarLabel=()=>{
+    const expanded=!$('.layout').classList.contains('sidebar-collapsed');
+    sidebarToggle.textContent=expanded?'收起侧栏':'目录 / 批注';
+    sidebarToggle.setAttribute('aria-expanded',String(expanded));
+  };
+  new MutationObserver(updateSidebarLabel).observe($('.layout'),{attributes:true,attributeFilter:['class']});
+  setSidebarCollapsed(true);
+  updateSidebarLabel();
   $('#pdf-pane').append(h('p',{id:'kp-empty-project',hidden:true,text:globalThis.KP_DIRECT?'尚未生成 PDF。请在左侧 Kimi 中起草或修复编译问题。':'正式稿尚未生成。请在左侧起草，查看预览后确认采纳。',style:{padding:'36px',color:'#62665d'}}));
   document.head.append(h('style',{text:'#pdf-viewer[hidden]{display:none!important} .topbar{display:none!important}#kp-model-rows,#kp-model-status,#compose-suggestion-details,#kp-translation{display:none!important}fieldset>button{display:none!important}fieldset{border:0;padding:8px 0}#kp-reading-status{display:flex;align-items:center;gap:8px;padding:8px 12px!important;background:#fafaf8;border-bottom:1px solid #eee}body{background:#f5f4f0}'}));
   $('#compose-title').textContent='翻译或修改选中段落';
