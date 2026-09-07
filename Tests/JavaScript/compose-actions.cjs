@@ -1,0 +1,40 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const source = fs.readFileSync(require('node:path').join(__dirname, '../../Resources/paper_studio_viewer.js'), 'utf8').split("document.addEventListener('DOMContentLoaded'")[0];
+const nodes = new Map();
+const $ = id => {if (!nodes.has(id)) nodes.set(id, {textContent:'', value:'翻译', hidden:true, disabled:false, close(){}}); return nodes.get(id);};
+const calls = [];
+const state = {pendingAnchor:{quote:'Selected paper text', pdf_digest:'selected-version'}, pdfDigest:'new-version'};
+const context = vm.createContext({state, $, KP_DIRECT:true, openCompose(){}, clearPendingSelection(){},
+  applyComposeSubmitting(value){state.composeSubmitting=value;},
+  kpNative:body=>new Promise((resolve,reject)=>calls.push({body,resolve,reject}))});
+vm.runInContext(source, context);
+(async()=>{
+  const translating = vm.runInContext('kpTranslateCompose()',context);
+  assert.equal(calls[0].body.operation,'translate');
+  assert.equal(calls[0].body.text,'Selected paper text');
+  calls[0].resolve({text:'选中的论文文字'}); await translating;
+  assert.equal($('#kp-compose-translation').textContent,'选中的论文文字');
+  assert.equal(calls.length,1,'Reading translation must not send an editing prompt');
+  const submitting = vm.runInContext('submitCompose({preventDefault(){}})',context);
+  assert.equal(calls[1].body.digest,'selected-version','Retain the PDF version at selection time');
+  calls[1].reject(new Error('请先在左侧打开一个 Kimi 会话。')); await submitting;
+  assert.equal($('#kp-compose-status').textContent,'请先在左侧打开一个 Kimi 会话。','Error must be inside the modal');
+  assert.equal(state.composeSubmitting,false);
+  assert.equal($('#compose-submit').textContent,'发送修改要求');
+  const stale = vm.runInContext('kpTranslateCompose()',context);
+  vm.runInContext('openCompose()',context);
+  calls[2].resolve({text:'old translation'}); await stale;
+  assert.equal($('#kp-compose-translation').textContent,'','A reopened dialog must not show the old response');
+  const lateSubmit = vm.runInContext('submitCompose({preventDefault(){}})',context);
+  vm.runInContext('openCompose()',context);
+  calls[3].reject(new Error('old submit error')); await lateSubmit;
+  assert.equal($('#kp-compose-status').textContent,'','Old send errors must not overwrite a new dialog');
+  let closed=false;$('#compose-dialog').close=()=>{closed=true;};
+  const lateSuccess = vm.runInContext('submitCompose({preventDefault(){}})',context);
+  vm.runInContext('openCompose()',context);
+  calls[4].resolve({ok:true}); await lateSuccess;
+  assert.equal(closed,false,'Old send completion must not close a new dialog');
+  console.log('PASS: modal translation, visible errors, selection version and stale-response protection');
+})().catch(error=>{console.error(error);process.exitCode=1;});
