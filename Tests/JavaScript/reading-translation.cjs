@@ -13,7 +13,7 @@ function fixture(saved = {}) {
     sessionStorage: {getItem: key => saved[key] ?? null, setItem: (key,value) => {saved[key]=value;}},
     openCompose() {}, focusComment() {}, jumpToComment() {}, document: {addEventListener(name,fn) {listeners[name]=fn;}}, state: {},
     $: id => id === '#kp-selection-translation' ? popup : id === '#kp-selection-output' ? popupOutput : output, clearTimeout, setTimeout, setInterval,
-    window: {innerWidth: 640, innerHeight: 480, webkit: {messageHandlers: {paper: {postMessage(body) {
+    window: {addEventListener(name,fn) {listeners[name]=fn;}, removeEventListener() {}, innerWidth: 640, innerHeight: 480, webkit: {messageHandlers: {paper: {postMessage(body) {
       return new Promise(resolve => calls.push({body, resolve}));
     }}}}},
     fetch: async () => ({ok: true, json: () => new Promise(resolve => {response = resolve;})}),
@@ -76,7 +76,8 @@ function fixture(saved = {}) {
     }};
     state.selection = {
       getSelectedText: () => ({toPromise: async () => ['keep while scrolling']}),
-      getFormattedSelection: () => [],
+      getFormattedSelection: () => [{pageIndex:0}],
+      getState: () => ({selecting:true, selection:{}}),
       onBeginSelection: fn => {readerEvents.begin = fn; return () => {};},
       onEndSelection: fn => {readerEvents.end = fn; return () => {};},
       onSelectionChange: fn => {readerEvents.change = fn; return () => {};}
@@ -91,6 +92,32 @@ function fixture(saved = {}) {
   assert.equal(scrolling.popupOutput.textContent,'persistent translation','A request may finish while scrolling');
   scrolling.run('readerEvents.scroll?.();');
   assert.equal(scrolling.popup.hidden,false);
+  scrolling.run(`
+    globalThis.DOCUMENT_ID = 'test-pdf';
+    state.viewer.registry = Promise.resolve({getPlugin: () => ({endSelection: () => readerEvents.end()})});
+    readerEvents.begin();
+  `);
+  scrolling.listeners.pointerup({clientX:300,clientY:200,composedPath:()=>[]});
+  await new Promise(resolve=>setTimeout(resolve,220));
+  assert.equal(scrolling.calls.length,2,'Release away from the starting page must finish selection and translate');
+  scrolling.calls[1].resolve({text:'cross-page translation'});
+  await new Promise(resolve=>setImmediate(resolve));
+  scrolling.listeners.pointermove({buttons:0,clientX:310,clientY:200});
+  await new Promise(resolve=>setTimeout(resolve,220));
+  assert.equal(scrolling.calls.length,2,'Mouse movement after release must not restart translation');
+  scrolling.run(`readerEvents.begin(); state.selection.getState=()=>({selecting:false,selection:null});`);
+  scrolling.listeners.pointerup({clientX:300,clientY:200,composedPath:()=>[]});
+  await new Promise(resolve=>setTimeout(resolve,220));
+  assert.equal(scrolling.calls.length,2,'Cleared selections must not trigger extraction or an error popup');
+  scrolling.run(`
+    state.selection.getSelectedText=()=>({toPromise:async()=>['captured before virtualization']});
+    readerEvents.end();
+    state.selection.getSelectedText=()=>{throw new Error('selection already virtualized');};
+  `);
+  await new Promise(resolve=>setTimeout(resolve,220));
+  assert.equal(scrolling.calls[2].body.text,'captured before virtualization');
+  scrolling.calls[2].resolve({text:'preserved across scrolling'});
+  await new Promise(resolve=>setImmediate(resolve));
   const release = fixture();
   const clickStart = source.indexOf('  document.addEventListener("click",');
   const clickEnd = source.indexOf('  document.addEventListener("keydown",',clickStart);
@@ -106,5 +133,14 @@ function fixture(saved = {}) {
   assert.equal(release.popup.hidden,false,'Inside click preserves the translation');
   release.listeners.click({composedPath:()=>[]});
   assert.equal(release.popup.hidden,true,'Later outside click dismisses the visible translation');
+  const preferences = fixture();
+  const settingsStart = source.indexOf('  kpNative({operation: "settings"}).then');
+  const settingsEnd = source.indexOf('  }).catch', settingsStart);
+  const settingsBlockEnd = source.indexOf('\n', settingsEnd);
+  preferences.run('const translation={open:false};' + source.slice(settingsStart,settingsBlockEnd));
+  preferences.run('kpTranslationPreferenceChanged=true;kpTranslationEnabled=false;');
+  preferences.calls[0].resolve({enabled:true});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(preferences.run('kpTranslationEnabled'),false,'Late settings must not overwrite an explicit user preference');
   console.log('PASS: translation stays on the newest selection; obsolete viewport responses are ignored (mock bridge)');
 })().catch(error => {console.error(error); process.exitCode = 1;});

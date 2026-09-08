@@ -24,6 +24,14 @@ from paper_studio import Studio
 
 RESOURCES = Path(__file__).resolve().parent
 
+# watchdog's native FSEvents observer can deadlock during Thread.start on
+# macOS. Keep that blocking call off the startup path by using its portable
+# polling implementation; the pinned upstream package stays unmodified.
+if sys.platform == 'darwin':
+    import tex_mcp_web.watcher as paper_watcher
+    from watchdog.observers.polling import PollingObserver
+    paper_watcher.Observer = PollingObserver
+
 
 class PaperService(TexMcpWebServer):
     def __init__(self, config):

@@ -42,6 +42,13 @@ final class TranslationStub: URLProtocol {
     override func stopLoading() { delivery?.cancel() }
 }
 
+final class CredentialProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var reads = 0
+    var count: Int { lock.withLock { reads } }
+    func next() -> Int { lock.withLock { reads += 1; return reads } }
+}
+
 @main struct TranslationChecks {
     @MainActor static func main() async throws {
         precondition(RuntimePaths().environment()["PYTHONDONTWRITEBYTECODE"] == "1", "Bundled Python must not invalidate the app signature")
@@ -52,9 +59,9 @@ final class TranslationStub: URLProtocol {
         defer { try? FileManager.default.removeItem(at: folder) }
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [TranslationStub.self]
-        var credentialReads = 0
+        let credentialReads = CredentialProbe()
         let service = TranslationService(defaults: defaults, cacheURL: folder.appendingPathComponent("cache.json"),
-                                         session: URLSession(configuration: configuration), secretReader: { credentialReads += 1; return "fictional-test-only" },
+                                         session: URLSession(configuration: configuration), secretReader: { _ = credentialReads.next(); return "fictional-test-only" },
                                          keyAvailable: { false })
         do {
             _ = try await service.handle(["operation": "translate", "text": "Missing configuration"])
@@ -112,28 +119,69 @@ final class TranslationStub: URLProtocol {
         _ = try await service.handle(["operation": "translate", "text": qwenSource])
         precondition(TranslationStub.lastPayload["translation_options"] == nil)
         precondition((TranslationStub.lastPayload["messages"] as? [[String: String]])?.first?["role"] == "system")
-        precondition(credentialReads == 1, "Different passages and model/language changes must reuse the authorized credential")
+        precondition(credentialReads.count == 1, "Different passages and model/language changes must reuse the authorized credential")
         defaults.set("https://another.invalid/v1/chat/completions", forKey: "translation.endpoint")
         _ = try await service.handle(["operation": "translate", "text": "A changed endpoint"])
-        precondition(credentialReads == 2, "An endpoint change must invalidate credential reuse")
+        precondition(credentialReads.count == 2, "An endpoint change must invalidate credential reuse")
         let reopened = TranslationService(defaults: defaults, cacheURL: folder.appendingPathComponent("reopened.json"),
-            session: URLSession(configuration: configuration), secretReader: { credentialReads += 1; return "fictional-test-only" }, keyAvailable: { false })
+            session: URLSession(configuration: configuration), secretReader: { _ = credentialReads.next(); return "fictional-test-only" }, keyAvailable: { false })
         _ = try await reopened.handle(["operation": "translate", "text": "A new service instance"])
-        precondition(credentialReads == 3, "Credentials must not persist between service instances")
-        var attempts = 0
+        precondition(credentialReads.count == 3, "Credentials must not persist between service instances")
+        let attempts = CredentialProbe()
         let denied = TranslationService(defaults: defaults, cacheURL: folder.appendingPathComponent("denied.json"),
             session: URLSession(configuration: configuration), secretReader: {
-                attempts += 1
-                if attempts == 1 { throw NSError(domain: "fictional-denial", code: 1) }
+                let attempt = attempts.next()
+                if attempt == 1 { throw NSError(domain: "fictional-denial", code: 1) }
                 return "fictional-test-only"
             }, keyAvailable: { false })
         do {
             _ = try await denied.handle(["operation": "translate", "text": "Retry permission"])
             preconditionFailure("Denied credential read must fail")
-        } catch { precondition(attempts == 1) }
+        } catch { precondition(attempts.count == 1) }
         _ = try await denied.handle(["operation": "translate", "text": "Retry permission"])
         _ = try await denied.handle(["operation": "translate", "text": "Another passage after permission"])
-        precondition(attempts == 2, "Failures must not be cached; successful retries must be reused")
+        precondition(attempts.count == 2, "Failures must not be cached; successful retries must be reused")
+        let slowReads = CredentialProbe()
+        let slow = TranslationService(defaults: defaults, cacheURL: folder.appendingPathComponent("slow.json"),
+            session: URLSession(configuration: configuration), secretReader: {
+                _ = slowReads.next()
+                Thread.sleep(forTimeInterval: 0.3)
+                return "fictional-slow"
+            }, keyAvailable: { false })
+        let slowFirst = Task { try await slow.handle(["operation":"translate", "text":"Slow passage one"]) }
+        let slowSecond = Task { try await slow.handle(["operation":"translate", "text":"Slow passage two"]) }
+        let heartbeat = Date()
+        try await Task.sleep(nanoseconds: 30_000_000)
+        precondition(Date().timeIntervalSince(heartbeat) < 0.2, "Credential access must not block the UI actor")
+        _ = try await slowFirst.value
+        _ = try await slowSecond.value
+        precondition(slowReads.count == 1, "Different passages must share an in-flight credential read")
+        let changingReads = CredentialProbe()
+        let changing = TranslationService(defaults: defaults, cacheURL: folder.appendingPathComponent("changing.json"),
+            session: URLSession(configuration: configuration), secretReader: {
+                _ = changingReads.next()
+                Thread.sleep(forTimeInterval: 0.3)
+                return "fictional-obsolete"
+            }, keyAvailable: { false })
+        let requestsBefore = TranslationStub.requests
+        let invalidated = Task { try await changing.handle(["operation":"translate", "text":"Invalidated during credential access"]) }
+        try await Task.sleep(nanoseconds: 30_000_000)
+        _ = try await changing.handle(["operation":"saveSettings", "endpoint":defaults.string(forKey:"translation.endpoint")!,
+                                      "model":"updated-model", "language":"English", "enabled":true])
+        do { _ = try await invalidated.value; preconditionFailure("Old credential request must be cancelled") }
+        catch { precondition(TranslationStub.requests == requestsBefore, "No HTTP with an invalidated credential") }
+        _ = try await changing.handle(["operation":"translate", "text":"New settings after cancelled credential read"])
+        precondition(changingReads.count == 2, "Old credential completion must not repopulate the cache")
+        print("PASS: slow credentials keep UI responsive; reads coalesce; settings invalidate old credentials before HTTP")
+        let metadata = TranslationService(defaults: defaults, cacheURL: folder.appendingPathComponent("metadata.json"),
+            session: URLSession(configuration: configuration), secretReader: { "fictional-unused" },
+            keyAvailable: { Thread.sleep(forTimeInterval: 0.3); return true })
+        let metadataTask = Task { try await metadata.handle(["operation":"settings"]) }
+        let metadataHeartbeat = Date()
+        try await Task.sleep(nanoseconds: 30_000_000)
+        precondition(Date().timeIntervalSince(metadataHeartbeat) < 0.2, "Key metadata queries must not block UI")
+        let metadataResult = try await metadataTask.value
+        precondition(metadataResult["hasKey"] as? Bool == true)
         let diskCache = try String(contentsOf: folder.appendingPathComponent("cache.json"), encoding: .utf8)
         precondition(!diskCache.contains("fictional-test-only"), "Credential must not enter the disk cache")
         print("PASS: credential reads reused per service/endpoint; failures retry; new instances reread; no credential in disk cache")

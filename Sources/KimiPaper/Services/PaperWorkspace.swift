@@ -339,7 +339,10 @@ final class PaperWorkspace: ObservableObject {
             throw AppFailure.message("请先在左侧打开一个 Kimi 会话。")
         }
         let epoch = selectionEpoch
-        let quote = String((body["quote"] as? String ?? "").prefix(16000))
+        let quote = body["quote"] as? String ?? ""
+        guard quote.count <= 16000 else {
+            throw AppFailure.message("选中文字超过 16000 字，请分段批注后发送。")
+        }
         let instruction = String((body["text"] as? String ?? "").prefix(16000))
         let digest = body["digest"] as? String
         guard !instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {

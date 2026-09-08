@@ -1,5 +1,30 @@
 // Native translation stays shared; annotations now enter the selected persistent conversation.
 let kpComposeRevision = 0;
+// The pinned upstream composer rejects selections spanning more than one page.
+// This native workflow sends the complete quote, not a single-page stored anchor.
+openTextSelectionCompose = async function() {
+  const scope = state.selection, digest = state.pdfDigest, revision = kpComposeRevision;
+  if (!scope || !digest) return;
+  const formatted = scope.getFormattedSelection();
+  if (!formatted.length) return;
+  const signature = JSON.stringify(formatted);
+  try {
+    const lines = await scope.getSelectedText().toPromise();
+    if (scope !== state.selection || digest !== state.pdfDigest || revision !== kpComposeRevision ||
+        signature !== JSON.stringify(scope.getFormattedSelection())) return;
+    const quote = lines.join(' ').replace(/\s+/g, ' ').trim();
+    if (!quote) throw new Error('未能读取选中文字，请重新划选。');
+    if ([...quote].length > 16000) throw new Error('选中文字超过 16000 字，请分段批注后发送。');
+    const selections = formatted.map(item => ({page:item.pageIndex + 1,
+      bbox:rectToBBox(item.rect), rects:item.segmentRects.map(rectToBBox)}));
+    const pages = selections.map(item => item.page).join('、');
+    openCompose({kind:'text_selection', quote, selection:selections[0], selections, pdf_digest:digest},
+      `第 ${pages} 页 · ${quote.slice(0, 160)}${quote.length > 160 ? '…' : ''}`, quote);
+  } catch (error) {
+    if (scope === state.selection && digest === state.pdfDigest && revision === kpComposeRevision)
+      $('#kp-reading-message').textContent = error.message || String(error);
+  }
+};
 const kpStudioOpenCompose = openCompose;
 openCompose = function(...args) {
   ++kpComposeRevision;

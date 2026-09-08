@@ -129,6 +129,7 @@ submitCompose = async function(event) {
   } finally {applyComposeSubmitting(false); $("#compose-submit").textContent = "开始生成候选";}
 };
 
+let kpTranslationPreferenceChanged = false;
 let kpTranslationEnabled = false, kpReadKey = "", kpTranslateRevision = 0, kpScrollTimer, kpLastText = "";
 let kpSelectionEnabled = sessionStorage.getItem("kp.selection-enabled") !== "false", kpSelectionScope = null, kpSelectionUnsubscribe = [];
 let kpPopupRevision = 0, kpPopupTimer, kpPopupBusy = false, kpPopupQueued = null, kpPopupText = "";
@@ -169,12 +170,16 @@ async function kpDrainPopup() {
   } finally {kpPopupBusy = false;}
 }
 
-async function kpShowSelection() {
+async function kpShowSelection(snapshot = null) {
   if (!kpSelectionEnabled || !state.selection) return;
   const revision = ++kpPopupRevision, scope = state.selection, digest = state.pdfDigest;
+  if (snapshot && (snapshot.scope !== scope || snapshot.digest !== digest)) return;
+  if (!snapshot && scope.getFormattedSelection && !scope.getFormattedSelection().length) return;
   clearTimeout(kpScrollTimer); ++kpTranslateRevision;
   try {
-    const lines = await scope.getSelectedText().toPromise();
+    const captured = snapshot ? await snapshot.result : {lines: await scope.getSelectedText().toPromise()};
+    if (captured.error) throw captured.error;
+    const lines = captured.lines;
     const text = lines.join(" ").trim();
     if (revision !== kpPopupRevision || scope !== state.selection || digest !== state.pdfDigest) return;
     if (!text) {kpClosePopup(); return;}
@@ -185,7 +190,8 @@ async function kpShowSelection() {
     kpPopupQueued = {text, revision};
     await kpDrainPopup();
   } catch (error) {
-    if (revision === kpPopupRevision) {
+    if (revision === kpPopupRevision && scope === state.selection && digest === state.pdfDigest &&
+        (!scope.getFormattedSelection || scope.getFormattedSelection().length)) {
       $("#kp-selection-translation").hidden = false; kpPositionPopup();
       $("#kp-selection-output").textContent = error.message || String(error);
     }
@@ -199,13 +205,55 @@ function kpBindSelection() {
   kpClosePopup(); kpSelectionScope = state.selection;
   if (!kpSelectionScope) return;
   const root = state.viewer.shadowRoot;
+  const scope = kpSelectionScope;
+  let origin = null, active = false, gesture = 0, disposed = false;
+  const listen = (target, name, handler) => {
+    target.addEventListener(name, handler, true);
+    kpSelectionUnsubscribe.push(() => target.removeEventListener(name, handler, true));
+  };
+  const finish = event => {
+    if (!active) return;
+    const current = gesture;
+    kpPopupPoint = {x: event.clientX ?? kpPopupPoint.x, y: event.clientY ?? kpPopupPoint.y};
+    // The pinned reader keeps drag ownership on the starting page. Forward
+    // release there even when the pointer ends on another page or outside it.
+    if (origin && !event.composedPath?.().includes(origin)) {
+      origin.dispatchEvent(new PointerEvent("pointerup", {bubbles: true, composed: true,
+        pointerId: event.pointerId ?? 1, clientX: kpPopupPoint.x, clientY: kpPopupPoint.y, buttons: 0}));
+    }
+    // A virtualized starting page may already be unmounted. Finish through
+    // the pinned selection plugin after normal release handlers have run.
+    Promise.resolve(state.viewer.registry).then(registry => {
+      if (disposed || !active || gesture !== current || state.selection !== scope) return;
+      const currentState = scope.getState();
+      if (!currentState.selecting) { active = false; return; }
+      registry.getPlugin("selection").endSelection(DOCUMENT_ID);
+    }).catch(error => {
+      if (!disposed && active && gesture === current) {
+        active = false;
+        kpShowSelection();
+        console.warn("Selection release recovery failed", error);
+      }
+    });
+  };
+  listen(root, "pointerdown", event => {origin = event.composedPath()[0]; ++gesture;});
+  listen(document, "pointerup", finish);
+  listen(document, "pointercancel", finish);
+  listen(document, "pointermove", event => {if (event.buttons === 0) finish(event);});
+  listen(window, "blur", finish);
+  kpSelectionUnsubscribe.push(() => {disposed = true;});
   const pointer = event => {kpPopupPoint = {x: event.clientX, y: event.clientY};};
   root.addEventListener("pointerup", pointer, true);
   kpSelectionUnsubscribe.push(() => root.removeEventListener("pointerup", pointer, true));
-  kpSelectionUnsubscribe.push(kpSelectionScope.onBeginSelection(kpClosePopup));
+  kpSelectionUnsubscribe.push(kpSelectionScope.onBeginSelection(() => {active = true; kpClosePopup();}));
   kpSelectionUnsubscribe.push(kpSelectionScope.onEndSelection(() => {
+    active = false;
     clearTimeout(kpPopupTimer);
-    kpPopupTimer = setTimeout(kpShowSelection, 180);
+    if (!scope.getFormattedSelection().length) return;
+    // Extract at release time, before scrolling can virtualize either page.
+    const snapshot = {scope, digest: state.pdfDigest, result: scope.getSelectedText().toPromise()
+      .then(lines => ({lines}), error => ({error}))};
+    kpPopupTimer = setTimeout(() => kpShowSelection(snapshot), 180);
   }));
   // PDF virtualization can clear its selection while scrolling. Keep the
   // captured translation visible until the reader deliberately dismisses it.
@@ -304,10 +352,18 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("#kp-reading-status").append(h("label", {}, h("input", {id: "kp-selection-enabled", type: "checkbox", checked: kpSelectionEnabled}), " 划选后自动翻译"), h("span", {id: "kp-reading-message", style: {marginLeft: "12px"}}));
   $("#kp-selection-enabled").addEventListener("change", event => {kpSelectionEnabled = event.target.checked; sessionStorage.setItem("kp.selection-enabled", String(kpSelectionEnabled)); kpClosePopup();});
   $("#kp-translation-enabled").addEventListener("change", e => {
+    kpTranslationPreferenceChanged = true;
     kpTranslationEnabled = e.target.checked;
     ++kpTranslateRevision; kpReadKey = ""; clearTimeout(kpScrollTimer);
   });
-  try {const config = await kpNative({operation: "settings"}); kpTranslationEnabled = config.enabled; $("#kp-translation-enabled").checked = config.enabled; translation.open = config.enabled;} catch (_) { /* Browser preview has no native translation transport. */ }
+  // Keychain status may wait for system authorization. Bind the reader without
+  // waiting, and never overwrite a preference the user changed in the meantime.
+  kpNative({operation: "settings"}).then(config => {
+    if (kpTranslationPreferenceChanged) return;
+    kpTranslationEnabled = config.enabled;
+    $("#kp-translation-enabled").checked = config.enabled;
+    translation.open = config.enabled;
+  }).catch(() => { /* Browser preview has no native translation transport. */ });
   const loadModels = async () => {
     try {
       const data = await kpRequest("/kp/models", undefined, "GET");
