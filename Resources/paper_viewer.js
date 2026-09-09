@@ -143,9 +143,9 @@ function kpClosePopup() {
 
 function kpPositionPopup() {
   const popup = $("#kp-selection-translation");
-  const width = Math.min(360, window.innerWidth - 24);
+  const width = Math.min(320, window.innerWidth - 24);
   popup.style.width = `${width}px`;
-  const height = Math.min(330, window.innerHeight - 24);
+  const height = Math.min(280, window.innerHeight - 24);
   popup.style.maxHeight = `${height}px`;
   const x = Math.max(12, Math.min(kpPopupPoint.x + 16, window.innerWidth - width - 12));
   let y = kpPopupPoint.y + 36;
@@ -303,13 +303,13 @@ document.addEventListener("DOMContentLoaded", async () => {
   const popup = h("section", {id: "kp-selection-translation", role: "region", "aria-label": "选区翻译", hidden: true,
     style: {position: "fixed", zIndex: "10000", boxSizing: "border-box", padding: "12px 14px", border: "1px solid #d9dce6", borderRadius: "12px", background: "#fff", color: "#20232c", boxShadow: "0 8px 32px #0003", display: "flex", flexDirection: "column", gap: "10px"}},
     h("div", {style: {display: "flex", alignItems: "center", gap: "8px"}}, h("strong", {text: "选区翻译", style: {flex: "1"}}),
-      h("button", {type: "button", text: "写批注", onclick: () => {kpClosePopup(); openTextSelectionCompose();}}),
+      h("button", {type: "button", class: "kp-revise", text: "修改这段", onclick: () => {kpClosePopup(); openTextSelectionCompose();}}),
       h("button", {type: "button", text: "重试", onclick: () => {
         const revision = ++kpPopupRevision;
         $("#kp-selection-output").textContent = "正在翻译…";
         kpPopupQueued = {text: kpPopupText, revision}; kpDrainPopup();
       }}),
-      h("button", {type: "button", text: "关闭", "aria-label": "关闭选区翻译", onclick: kpClosePopup})),
+      h("button", {type: "button", class: "kp-close", text: "×", "aria-label": "关闭选区翻译", onclick: kpClosePopup})),
     h("div", {id: "kp-selection-output", "aria-live": "polite", style: {overflow: "auto", whiteSpace: "pre-wrap", lineHeight: "1.7", fontSize: "14px", minHeight: "32px"}}));
   // Keep the hidden attribute authoritative despite the popup's flex layout.
   document.head.append(h("style", {text: "#kp-selection-translation[hidden]{display:none!important}"}));

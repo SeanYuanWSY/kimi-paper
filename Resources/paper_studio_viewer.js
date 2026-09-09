@@ -105,7 +105,7 @@ document.addEventListener('DOMContentLoaded',()=>{
   $('#compose-cancel').textContent='取消';
   $('#compose-text').placeholder='希望这段如何修改？直接写要求即可。';
   $('#compose-submit').textContent='发送修改要求';
-  if(globalThis.KP_DIRECT)$('#kp-reading-message').textContent='划选文字可翻译或直接让 Kimi 修改';
+  if(globalThis.KP_DIRECT)$('#kp-reading-message').textContent='划选即可翻译 · 批注发送到左侧会话';
   else $('#kp-reading-status').append(h('button',{text:'发送积攒批注',onclick:async()=>{try{await kpRequest('/kp/studio/send',{});$('#kp-reading-message').textContent='已发送到当前会话。';}catch(e){$('#kp-reading-message').textContent=e.message;}}}));
 });
 

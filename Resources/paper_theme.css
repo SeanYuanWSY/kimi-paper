@@ -1,0 +1,85 @@
+/* Paper Atelier — app-local appearance. Upstream Kimi and PDF packages stay intact. */
+:root[data-kp-surface] {
+  color-scheme: light;
+  --kp-ivory: #f8f5ee;
+  --kp-paper: #fffdf8;
+  --kp-olive: #46543b;
+  --kp-line: #e2ded3;
+  --kp-ink: #292e25;
+}
+:root[data-kp-surface="chat"] {
+  --bg: #fcfaf6 !important; --canvas: #f4f1e9 !important;
+  --panel: #f0ede5 !important; --panel2: #e8e7dd !important;
+  --blue: #46543b !important; --blue2: #36432e !important;
+  --soft: #e7ebdf !important; --bd: #c6ceba !important;
+  --bluebg: #e7ebdf !important; --blueln: #c6ceba !important;
+  --color-bg: #fcfaf6 !important;
+  --color-surface: #f3f0e8 !important;
+  --color-surface-raised: #fffdf8 !important;
+  --color-surface-overlay: #fffdf8 !important;
+  --color-surface-sunken: #eeebe3 !important;
+  --color-surface-deep: #eeebe3 !important;
+  --color-well: #f3f0e8 !important;
+  --color-text: #292e25 !important; --color-text-strong: #20251e !important;
+  --color-text-muted: #686c61 !important; --color-text-faint: #6f7467 !important;
+  --dim: #686c61 !important; --muted: #6f7467 !important;
+  --color-line: #e2ded3 !important; --color-line-strong: #ccc8bc !important;
+  --color-subtle: #eeeae1 !important; --color-hover: #efeee5 !important;
+  --color-selected: #e4e7db !important; --color-selected-hover: #dce2d2 !important;
+  --color-sidebar-bg: #f4f1e9 !important; --color-sidebar-tint: transparent !important;
+  --color-user-bubble-bg: #eeeee5 !important;
+  --color-accent: #46543b !important; --color-accent-hover: #36432e !important;
+  --color-accent-soft: #e7ebdf !important; --color-accent-bd: #c6ceba !important;
+  --color-composer-bg: #fffdf9 !important; --color-composer-line: #dcd8cc !important;
+  --color-composer-focus-line: #879477 !important;
+  --color-send-bg: #46543b !important; --color-send-bg-hover: #36432e !important;
+  --color-send-bg-disabled: #e9e7df !important; --color-send-icon-disabled: #969a8e !important;
+  --color-menu-bg: #fffdf8 !important; --color-menu-bg-frost: #fffdf8f5 !important;
+  --color-topbar-bg-frost: #fcfaf6ed !important;
+  --p-selection: #dce6cb !important;
+  --radius-composer: 18px !important;
+  --shadow-input: 0 2px 10px #393e2410 !important;
+  --shadow-menu: 0 8px 28px #393e241a !important;
+  --font-ui-latin: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial !important;
+}
+:root[data-kp-surface="reader"], :root[data-kp-surface="panel"] {
+  --bg: #f8f5ee; --bg-elev: #fffdf8; --bg-pdf: #f3f0e8;
+  --fg: #292e25; --fg-dim: #686c61; --border: #e2ded3;
+  --accent: #46543b; --accent-soft: #e7ebdf;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+}
+[data-kp-surface="reader"] body {background:var(--kp-ivory)!important}
+[data-kp-surface="reader"] #kp-reading-status {
+  min-height:36px; padding:5px 12px!important; gap:8px!important;
+  background:var(--kp-ivory)!important;border-color:var(--kp-line)!important;
+  color:#686c61;font-size:11px;
+}
+#kp-reading-status label {display:flex;align-items:center;gap:5px;white-space:nowrap;cursor:pointer}
+#kp-reading-status input {accent-color:#46543b}
+#kp-reading-message {margin-left:0!important; flex:1; min-width:80px;font-size:11px;line-height:1.45}
+#sidebar-toggle-btn {background:transparent!important;color:#56604a!important;border:0!important;font-size:11px!important}
+[data-kp-surface="reader"] #sidebar {background:var(--kp-paper);border-left:1px solid var(--kp-line);box-shadow:-8px 0 24px #393e2412!important}
+[data-kp-surface="reader"] button:focus-visible,[data-kp-surface="panel"] button:focus-visible,
+[data-kp-surface="reader"] textarea:focus-visible,[data-kp-surface="panel"] input:focus-visible {
+  outline:2px solid #71825f;outline-offset:2px;
+}
+[data-kp-surface="reader"] #kp-selection-translation {
+  background:#fffdf9!important;color:#292e25!important;border-color:#dfdccf!important;
+  border-radius:12px!important;box-shadow:0 6px 24px #343b2524!important;
+  padding:12px!important;gap:10px!important;
+}
+#kp-selection-translation strong {font-size:11px;font-weight:500;color:#6f7467}
+#kp-selection-translation button {font-size:11px;padding:5px 8px;border:0;border-radius:6px;background:#eeeee5;color:#46543b}
+#kp-selection-translation button:hover {background:#e2e7d7}
+#kp-selection-translation button.kp-revise {background:#46543b;color:#fffdf8}
+#kp-selection-translation button.kp-close {background:transparent;font-size:16px;padding:0 5px;min-width:24px;min-height:24px}
+#kp-selection-output {font-size:13px!important;line-height:1.75!important;overflow-wrap:anywhere}
+[data-kp-surface="reader"] #compose-dialog {background:#fffdf8;color:#292e25;border:1px solid #dedbcf;border-radius:16px;width:min(520px,calc(100vw - 40px));padding:24px;box-shadow:0 18px 60px #30382030}
+[data-kp-surface="reader"] #compose-title {font-size:19px;font-weight:600}
+[data-kp-surface="reader"] #compose-anchor {font:12px/1.6 -apple-system,BlinkMacSystemFont,sans-serif;background:#f3f0e7;padding:12px;border-radius:8px;max-height:110px;overflow:auto}
+[data-kp-surface="reader"] #compose-text {min-height:100px;font:14px/1.7 -apple-system,BlinkMacSystemFont,sans-serif;border-radius:8px;padding:12px;border-color:#d9d7ca}
+[data-kp-surface="reader"] #compose-submit {background:#46543b;color:white;border-radius:7px;border-color:#46543b}
+[data-kp-surface="reader"] #compose-dialog::backdrop {background:#30382844}
+[data-kp-surface="panel"] body {background:#f8f5ee;color:#292e25}
+[data-kp-surface="panel"] button.primary {background:#46543b;color:#fffdf8}
+[data-kp-surface="panel"] dialog {background:#fffdf8;color:#292e25;border:1px solid #dedbcf;box-shadow:0 12px 40px #30382020}

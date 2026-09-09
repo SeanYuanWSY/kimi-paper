@@ -6,14 +6,23 @@ struct ContentView: View {
     @State private var showHelp = false
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 16) {
-                Image(systemName: "book.closed.fill").foregroundStyle(.indigo)
-                Text("论文").foregroundStyle(.secondary)
-                Text(paperLocation).fontWeight(.semibold)
-                Text(workspace.paper?.path ?? "")
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                    .help(workspace.paper?.path ?? "")
-                Spacer()
+            HStack(spacing: 14) {
+                Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 28, height: 28)
+                    .accessibilityHidden(true)
+                Text("Kimi Paper").font(.system(size: 14, weight: .semibold))
+                Rectangle().fill(Atelier.line).frame(width: 1, height: 18).padding(.horizontal, 2)
+                Button { workspace.choosePaper() } label: {
+                    HStack(spacing: 7) {
+                        Image(systemName: "doc.text").foregroundStyle(Atelier.olive)
+                        Text(paperLocation).lineLimit(1).truncationMode(.middle)
+                        Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold))
+                    }
+                }
+                .buttonStyle(.plain)
+                .help(workspace.paper?.path ?? "打开论文")
+                .accessibilityLabel("更换论文：\(paperLocation)")
+                .disabled(workspace.connecting || workspace.busy || workspace.maintenance)
+                Spacer(minLength: 16)
                 if workspace.connecting || workspace.busy {
                     ProgressView().controlSize(.small)
                     Text(workspace.busy ? "Kimi 正在修改" : "正在连接").font(.caption).foregroundStyle(.secondary)
@@ -35,7 +44,7 @@ struct ContentView: View {
                         .disabled(workspace.busy || workspace.sending || workspace.maintenance)
                     Button("使用说明") { showHelp = true }
                 } label: { Image(systemName: "ellipsis.circle") }.menuStyle(.borderlessButton).fixedSize()
-            }.padding(.horizontal, 20).padding(.vertical, 14)
+            }.padding(.horizontal, 18).padding(.vertical, 9).background(Atelier.ivory)
             Divider()
             if let issue = workspace.error {
                 HStack { Text(issue).font(.callout); Spacer(); Button("关闭") { workspace.error = nil } }
@@ -43,12 +52,6 @@ struct ContentView: View {
             }
             HSplitView {
                 VStack(spacing: 0) {
-                    HStack {
-                        Text("Kimi Code").fontWeight(.semibold)
-                        Spacer()
-                        Text("在左侧栏切换工作区与会话").foregroundStyle(.secondary)
-                    }.font(.caption).padding(12)
-                    Divider()
                     if let url = workspace.chatURL {
                         ZStack {
                             WebPane(url: url, revision: workspace.webRevision, onFailure: { workspace.error = $0 }, onLocation: workspace.chatNavigated).id(url.port)
@@ -59,10 +62,10 @@ struct ContentView: View {
                             }
                         }
                     } else { empty("Kimi 工作台", symbol: "sparkles") }
-                }.frame(minWidth: 420, idealWidth: 600)
+                }.frame(minWidth: 360, idealWidth: 540)
                 VStack(spacing: 0) {
                     HStack {
-                        Text("论文").fontWeight(.semibold)
+                        Label("阅读", systemImage: "doc.richtext").fontWeight(.medium).foregroundStyle(Atelier.olive)
                         Spacer()
                         Text(paperLocation).foregroundStyle(.secondary)
                         Button("更换…") { workspace.choosePaper() }
@@ -70,14 +73,16 @@ struct ContentView: View {
                         Button { workspace.studioAction("freeze") } label: { Image(systemName: "arrow.clockwise") }
                             .buttonStyle(.borderless).help("重新编译 PDF")
                             .disabled(workspace.busy || workspace.sending || workspace.maintenance)
-                    }.font(.caption).padding(10)
+                    }.font(.caption).padding(.horizontal, 12).padding(.vertical, 8).background(Atelier.ivory)
                     Divider()
                     if let url = workspace.reviewURL {
                         WebPane(url: url, revision: workspace.paperRevision, onFailure: { workspace.error = $0 }, translation: workspace.translation, agentAction: workspace.handleAgentAction).id(url.port)
                     } else { empty("论文预览", symbol: "doc.richtext") }
-                }.frame(minWidth: 500, idealWidth: 720)
+                }.frame(minWidth: 500, idealWidth: 780)
             }
-        }.frame(minWidth: 1000, minHeight: 680).background(Color(nsColor: .windowBackgroundColor))
+        }.frame(minWidth: 940, minHeight: 640).background(Atelier.ivory)
+        .tint(Atelier.olive)
+        .preferredColorScheme(.light)
         .task { workspace.launch() }
         .sheet(isPresented: Binding(get: { panel != nil }, set: { if !$0 { panel = nil } })) {
             VStack(spacing: 0) {
@@ -115,4 +120,10 @@ struct ContentView: View {
         }
         return String(paper.path.dropFirst(root.path.count + 1))
     }
+}
+
+private enum Atelier {
+    static let ivory = Color(red: 0.973, green: 0.961, blue: 0.933)
+    static let olive = Color(red: 0.275, green: 0.329, blue: 0.231)
+    static let line = Color(red: 0.886, green: 0.871, blue: 0.827)
 }

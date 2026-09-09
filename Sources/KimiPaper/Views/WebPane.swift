@@ -67,6 +67,23 @@ struct WebPane: NSViewRepresentable {
         }
         """
         config.userContentController.addUserScript(WKUserScript(source: bootstrap, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        // Presentation is scoped to this app's local pane; never edit Kimi's private assets.
+        if let resource = Bundle.main.url(forResource: "paper_theme", withExtension: "css"),
+           let css = try? String(contentsOf: resource, encoding: .utf8),
+           let data = try? JSONSerialization.data(withJSONObject: [css]),
+           let encoded = String(data: data, encoding: .utf8) {
+            let surface = translation == nil ? "chat" : (url.path.contains("studio-panel") ? "panel" : "reader")
+            let theme = """
+            (() => {
+              document.documentElement.dataset.kpSurface = '\(surface)';
+              const style = document.createElement('style');
+              style.id = 'kimi-paper-atelier';
+              style.textContent = \(encoded)[0];
+              document.head.appendChild(style);
+            })();
+            """
+            config.userContentController.addUserScript(WKUserScript(source: theme, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        }
         // Use the official in-page credential store without exposing a credential in the page URL.
         // This WKWebsiteDataStore is nonpersistent and is cleared when the pane is dismantled.
         if url.scheme == "http", url.host == "127.0.0.1", let port = url.port,
