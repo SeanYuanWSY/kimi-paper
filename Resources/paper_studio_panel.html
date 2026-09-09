@@ -91,6 +91,7 @@ $('#archived').onchange=load;
 $('#freeze').onclick=async()=>{try{await api('/kp/studio/freeze',{});await load();}catch(e){$('#error').textContent=e.message;}};
 $('#sync').onclick=async()=>{if(!confirm('将停止 Kimi 并从正式稿重新建立草稿基线。当前草稿会保留副本；未冻结的新改动将阻止此操作。'))return;try{await api('/kp/studio/sync',{});$('#error').textContent='草稿已同步，请关闭面板并点击更多 → 重新连接。';}catch(e){$('#error').textContent=e.message;}};
 if(simple){document.querySelector('nav').remove();$('#local-history').hidden=true;$('#git-help').hidden=true;$('#git-title').hidden=false;$('#git-intro').hidden=false;$('#github-panel').open=true;$('#github-panel').classList.add('simple');}
-selectTab(tab==='settings'?'files':tab);load();if(tab==='settings')$('#settings').click();
+const openSettingsOnLoad=tab==='settings';
+selectTab(openSettingsOnLoad?'files':tab);if(!openSettingsOnLoad)load();if(openSettingsOnLoad)$('#settings').click();
 
 </script></body></html>
