@@ -11,9 +11,9 @@ struct KimiPaperApp: App {
         .defaultSize(width: 1420, height: 860)
         .commands {
             CommandGroup(replacing: .newItem) {
-                Button("打开论文…") { delegate.workspace.choosePaper() }
+                Button("打开文档文件夹…") { delegate.workspace.choosePaper() }
                     .keyboardShortcut("o")
-                    .disabled(delegate.workspace.busy || delegate.workspace.connecting
+                    .disabled(delegate.workspace.connecting
                               || delegate.workspace.sending || delegate.workspace.maintenance
                               || delegate.workspace.activeCandidates > 0)
             }

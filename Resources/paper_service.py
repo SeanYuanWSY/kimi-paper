@@ -493,11 +493,15 @@ async def main():
     runtime_root=os.environ.get('KIMI_PAPER_ROOT')
     runtime_main=os.environ.get('KIMI_PAPER_MAIN')
     config_path=Path(runtime_root)/'.tex-mcp-web.yaml' if runtime_root else None
-    config = load_config(config_path)
-    if runtime_main:config.main=runtime_main
-    config.port=0
-    config.auto_compile=False
-    server = PaperService(config)
+    if os.environ.get('KIMI_PAPER_DOCUMENTS') == '1':
+        from paper_documents import DocumentService
+        server = DocumentService(runtime_root, os.environ.get('KIMI_PAPER_CONTROL_TOKEN'))
+    else:
+        config = load_config(config_path)
+        if runtime_main:config.main=runtime_main
+        config.port=0
+        config.auto_compile=False
+        server = PaperService(config)
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):

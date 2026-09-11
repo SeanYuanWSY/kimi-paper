@@ -8,7 +8,17 @@ private final class RejectRedirects: NSObject, URLSessionTaskDelegate {
 }
 
 @MainActor
-final class LocalAPI {
+protocol KimiSessionClient {
+    func request(_ path: String, method: String, body: [String: Any]?) async throws -> [String: Any]
+    func browserURL(sessionID: String?) -> URL
+}
+
+extension KimiSessionClient {
+    func request(_ path: String) async throws -> [String: Any] { try await request(path, method: "GET", body: nil) }
+}
+
+@MainActor
+final class LocalAPI: KimiSessionClient {
     private let base: URL
     private let token: String
     private let session: URLSession
