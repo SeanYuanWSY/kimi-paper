@@ -7,6 +7,10 @@ MODE="${1:---build-only}"
 if [[ "$MODE" != '--build-only' && "$MODE" != '--run' ]]; then
   echo 'usage: scripts/build.sh [--build-only|--run]'; exit 1
 fi
+# Serialize packaging and pruning, including manual backup cleanup.
+if [[ "${KIMI_BUILD_LOCK_HELD:-}" != '1' ]]; then
+  exec /usr/bin/python3 "$ROOT_DIR/scripts/prune_build_backups.py" --build "${MODE#--}"
+fi
 if [[ -f "$APP_BUNDLE/Contents/MacOS/KimiPaper" ]] && /usr/sbin/lsof -t "$APP_BUNDLE/Contents/MacOS/KimiPaper" >/dev/null 2>&1; then
   echo '请先退出此构建目录中的 Kimi Paper。'; exit 1
 fi

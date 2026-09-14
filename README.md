@@ -26,7 +26,7 @@
 bash ./scripts/check-documents.sh
 ```
 
-首次构建需要联网下载 Python 依赖及固定提交的 tex-mcp-web。Python 环境在仓库的 `.runtime/` 中创建；打包时将运行时复制进应用。构建不会替换个人应用程序文件夹里已安装的版本。重复构建会把旧产物保留在 `dist/previous-*`，可自行清理。
+首次构建需要联网下载 Python 依赖及固定提交的 tex-mcp-web。Python 环境在仓库的 `.runtime/` 中创建；打包时将运行时复制进应用。构建不会替换个人应用程序文件夹里已安装的版本。重复构建会把旧产物保留在 `dist/previous-*`；成功构建后按备份目录创建时间只保留最近两份。构建与清理使用同一把锁；若备份正在使用、目录结构异常或检查失败，保留备份并提示未完成清理。此策略仅管理 `previous-*`，不会自动处理安装到其他位置时产生的备份。
 
 `./scripts/build.sh --run` 会在构建后打开应用。若有完整 Xcode / XCTest 环境，还可以执行 `swift test`；只有 Command Line Tools 的已验证机器使用上述独立检查及实际应用流程测试。
 

@@ -21,3 +21,6 @@ oauth/
 # Local browser verification output
 .playwright-cli/
 output/playwright/
+
+# Build and backup retention coordination
+.build-backup-prune.lock
